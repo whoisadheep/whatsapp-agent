@@ -26,7 +26,7 @@ class AIService {
         return tenant.systemPrompt + catalogText;
     }
 
-    async generateResponse(tenant, conversationHistory) {
+    async generateResponse(tenant, conversationHistory, imageData = null) {
         if (!this.genAI) {
             return "I'm sorry, the AI service is not configured yet. Please contact the administrator.";
         }
@@ -36,7 +36,12 @@ class AIService {
             const systemPrompt = await this.buildSystemPrompt(tenant);
 
             const model = this.genAI.getGenerativeModel({
-                model: 'gemini-2.5-flash',
+                model: 'gemini-2.5-flash-lite', // Reverting to balanced model for reliability
+                tools: [
+                    {
+                        google_search: {},
+                    },
+                ],
                 systemInstruction: systemPrompt,
             });
 
@@ -50,9 +55,20 @@ class AIService {
                 history: contents.slice(0, -1),
             });
 
-            // Send the latest user message
+            // Send the latest user message + Image if available
             const lastMessage = contents[contents.length - 1];
-            const result = await chat.sendMessage(lastMessage.parts[0].text);
+            const parts = [{ text: lastMessage.parts[0].text }];
+
+            if (imageData) {
+                parts.push({
+                    inlineData: {
+                        mimeType: 'image/jpeg',
+                        data: imageData,
+                    },
+                });
+            }
+
+            const result = await chat.sendMessage(parts);
             const response = result.response.text();
 
             console.log('🤖 AI response generated successfully');

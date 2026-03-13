@@ -6,6 +6,7 @@ const takeoverService = require('../services/takeover.service');
 const productService = require('../services/product.service');
 const leadService = require('../services/lead.service');
 const tenantService = require('../services/tenant.service');
+const paymentService = require('../services/payment.service');
 
 const router = express.Router();
 
@@ -169,6 +170,52 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'leads_list' });
             }
 
+            // ─── PAIRING COMMAND ───
+            if (command.startsWith('#pair ')) {
+                const pairNumber = command.substring(6).trim().replace(/\D/g, '');
+                if (!pairNumber) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ Please provide a valid number. Example: #pair 919005149776');
+                    return res.status(200).json({ status: 'error', reason: 'invalid pairing number' });
+                }
+
+                const code = await evolutionService.getPairingCode(tenant.instanceName, pairNumber);
+                if (code) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, 
+                        `🔗 *Pairing Code for ${tenant.name}*\n\n` +
+                        `🔢 Code: *${code}*\n\n` +
+                        `Steps for the owner:\n` +
+                        `1. Open WhatsApp -> Linked Devices\n` +
+                        `2. Link a Device -> *Link with phone number instead*\n` +
+                        `3. Enter the code above.`
+                    );
+                } else {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '❌ Failed to generate pairing code. Ensure the instance is not already connected.');
+                }
+                    return res.status(200).json({ status: 'pairing_code_generated' });
+            }
+
+            // ─── BILL / PAYMENT COMMAND ───
+            if (command.startsWith('#bill ')) {
+                const billParts = messageText.trim().substring(6).split('|').map(s => s.trim());
+                const amount = parseFloat(billParts[0]) || 0;
+                const description = billParts[1] || 'Payment';
+
+                if (!tenant.upiId) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ UPI is not configured for this tenant.');
+                    return res.status(200).json({ status: 'error', reason: 'upi not configured' });
+                }
+
+                const qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name, amount, description);
+                if (qrBase64) {
+                    await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
+                        `💳 *Payment Request — ${tenant.name}*\n\n💰 Amount: ₹${amount}\n📝 ${description}\n\nScan this QR code with any UPI app to pay.`
+                    );
+                } else {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '❌ Failed to generate payment QR code.');
+                }
+                return res.status(200).json({ status: 'bill_sent' });
+            }
+
             // Any other manual reply from owner → auto-pause AI for this contact
             if (!command.startsWith('#')) {
                 takeoverService.pause(tenant, senderNumber);
@@ -194,20 +241,33 @@ router.post('/', async (req, res) => {
             return res.status(200).json({ status: 'ignored', reason: 'status broadcast' });
         }
 
-        // Extract message text
+        // Extract message text and media
+        const message = data.message;
+        const imageMessage = message?.imageMessage;
+        
         const messageText =
-            data.message?.conversation ||
-            data.message?.extendedTextMessage?.text ||
-            data.message?.imageMessage?.caption ||
-            data.message?.videoMessage?.caption ||
+            message?.conversation ||
+            message?.extendedTextMessage?.text ||
+            imageMessage?.caption ||
+            message?.videoMessage?.caption ||
             null;
 
-        if (!messageText) {
-            console.log('⏭️  Non-text message received, skipping');
+        if (!messageText && !imageMessage) {
+            console.log('⏭️  Non-text and non-image message received, skipping');
             return res.status(200).json({ status: 'ignored', reason: 'non-text message' });
         }
 
         const pushName = data.pushName || 'Customer';
+
+        // ─── IMAGE HANDLING: Download image if message is a photo ───
+        let imageData = null;
+        if (imageMessage) {
+            console.log(`🖼️  Image message detected (${data.key.id}), downloading...`);
+            imageData = await evolutionService.downloadMedia(tenant.instanceName, data.key.id);
+            if (imageData) {
+                console.log('✅ Image downloaded successfully');
+            }
+        }
 
         // Ignore messages from explicitly ignored numbers for this tenant
         const ignoredNumbers = tenant.ignoredNumbers || [];
@@ -222,23 +282,40 @@ router.post('/', async (req, res) => {
             return res.status(200).json({ status: 'paused', reason: 'human takeover active' });
         }
 
-        console.log(`\n📩 Message from ${pushName} (${senderNumber}) to ${tenant.name}: "${messageText}"`);
+        console.log(`\n📩 Message content [${imageMessage ? 'IMAGE + ' : ''}${messageText || 'No text'}] from ${pushName} (${senderNumber}) to ${tenant.name}`);
 
         // Add user message to conversation history (with DB persistence)
-        await conversationService.addMessage(tenant.id, senderNumber, 'user', messageText, pushName);
+        // If image, we note it in text for context history
+        const processedText = imageMessage ? `[SENT AN IMAGE] ${messageText || ''}` : messageText;
+        await conversationService.addMessage(tenant.id, senderNumber, 'user', processedText, pushName);
 
         // Get conversation history for context
         const history = await conversationService.getHistory(tenant.id, senderNumber);
 
         // Generate AI response 
         console.log(`🤔 Generating AI response for ${tenant.name}...`);
-        const aiResponse = await aiService.generateResponse(tenant, history);
+        const aiResponse = await aiService.generateResponse(tenant, history, imageData);
 
         // Add AI response to conversation history
         await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
 
+        // ─── UPI QR AUTO-TRIGGER: Check if AI wants to send a payment QR ───
+        const cleanedResponse = aiResponse.replace(/\[SEND_UPI_QR\]/gi, '').trim();
+        const shouldSendQr = aiResponse.includes('[SEND_UPI_QR]') && tenant.upiId;
+
         // Send reply back through Evolution API with specific instance
-        await evolutionService.sendText(tenant.instanceName, senderNumber, aiResponse);
+        await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
+
+        // If AI triggered a QR, generate and send it
+        if (shouldSendQr) {
+            console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
+            const qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
+            if (qrBase64) {
+                await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
+                    `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app (Google Pay, PhonePe, Paytm, etc.)`
+                );
+            }
+        }
 
         // ─── LEAD CAPTURE: Auto-capture lead from customer message ───
         const interest = leadService.extractInterest(messageText);
