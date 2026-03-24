@@ -51,9 +51,10 @@ async function initializeTenants() {
     console.log(`\n🔄 Found ${tenants.length} tenants configuring...`);
 
     const port = process.env.PORT || 3001;
-    const isDocker = process.env.DOCKER_ENV === 'true';
-    const webhookHost = isDocker ? 'whatsapp-agent' : 'localhost';
-    const webhookUrl = `http://${webhookHost}:${port}/webhook`;
+    const webhookUrl = process.env.WEBHOOK_URL
+        || (process.env.DOCKER_ENV === 'true'
+            ? `http://whatsapp-agent:${port}/webhook`
+            : `http://localhost:${port}/webhook`);
 
     // Wait a few seconds for Evolution API to be ready
     await new Promise((resolve) => setTimeout(resolve, 5000));
