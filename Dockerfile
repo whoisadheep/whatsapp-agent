@@ -7,7 +7,6 @@ COPY package*.json ./
 RUN npm install --production
 
 COPY src ./src
-COPY .env ./.env
 
 ENV DOCKER_ENV=true
 
