@@ -9,11 +9,13 @@ const tenantService = require('../services/tenant.service');
 const paymentService = require('../services/payment.service');
 const transcriptionService = require('../services/transcription.service');
 const reviewService = require('../services/review.service');
+const ttsService = require('../services/tts.service');
 
 const router = express.Router();
 
 // Track server start time to ignore old messages replayed on reconnect
-const SERVER_START_TIME = Math.floor(Date.now() / 1000);
+// Subtracting 10 minutes (600 seconds) to account for Docker/WSL2 clock drift
+const SERVER_START_TIME = Math.floor(Date.now() / 1000) - 600;
 console.log(`🕐 Server start timestamp: ${SERVER_START_TIME} — messages before this will be ignored`);
 
 // Process incoming webhook events from Evolution API
@@ -273,17 +275,40 @@ router.post('/', async (req, res) => {
         // Extract message text and media
         const message = data.message;
         const imageMessage = message?.imageMessage;
+        const audioMessage = message?.audioMessage;
         
-        const messageText =
+        let messageText =
             message?.conversation ||
             message?.extendedTextMessage?.text ||
             imageMessage?.caption ||
             message?.videoMessage?.caption ||
             null;
 
+        // ─── VOICE MESSAGE HANDLING: Transcribe audio to text ───
+        if (audioMessage) {
+            console.log(`🎙️  Voice message detected (${data.key.id}), downloading...`);
+            const audioBase64 = await evolutionService.downloadMedia(tenant.instanceName, data.key.id);
+            if (audioBase64) {
+                const mimeType = audioMessage.mimetype || 'audio/ogg';
+                console.log(`🎙️  Transcribing voice message (${mimeType})...`);
+                const transcribedText = await transcriptionService.transcribe(audioBase64, mimeType);
+                if (transcribedText) {
+                    messageText = transcribedText;
+                    console.log(`🎙️  Voice transcribed: "${transcribedText.slice(0, 100)}${transcribedText.length > 100 ? '...' : ''}"`);
+                } else {
+                    console.error('❌ Voice transcription failed, replying with error');
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, "Sorry, I couldn't understand your voice message. Could you please type your message instead?");
+                    return res.status(200).json({ status: 'processed', reason: 'voice transcription failed' });
+                }
+            } else {
+                console.error('❌ Failed to download voice message');
+                return res.status(200).json({ status: 'error', reason: 'voice download failed' });
+            }
+        }
+
         if (!messageText && !imageMessage) {
-            console.log('⏭️  Non-text and non-image message received, skipping');
-            return res.status(200).json({ status: 'ignored', reason: 'non-text message' });
+            console.log('⏭️  Non-text, non-image, and non-audio message received, skipping');
+            return res.status(200).json({ status: 'ignored', reason: 'unsupported message type' });
         }
 
         const pushName = data.pushName || 'Customer';
@@ -311,11 +336,17 @@ router.post('/', async (req, res) => {
             return res.status(200).json({ status: 'paused', reason: 'human takeover active' });
         }
 
-        console.log(`\n📩 Message content [${imageMessage ? 'IMAGE + ' : ''}${messageText || 'No text'}] from ${pushName} (${senderNumber}) to ${tenant.name}`);
+        const mediaTag = audioMessage ? 'VOICE' : (imageMessage ? 'IMAGE' : '');
+        console.log(`\n📩 Message content [${mediaTag ? mediaTag + ' + ' : ''}${messageText || 'No text'}] from ${pushName} (${senderNumber}) to ${tenant.name}`);
 
         // Add user message to conversation history (with DB persistence)
-        // If image, we note it in text for context history
-        const processedText = imageMessage ? `[SENT AN IMAGE] ${messageText || ''}` : messageText;
+        // If image/voice, we note it in text for context history
+        let processedText = messageText;
+        if (audioMessage) {
+            processedText = `[SENT A VOICE MESSAGE] ${messageText || ''}`;
+        } else if (imageMessage) {
+            processedText = `[SENT AN IMAGE] ${messageText || ''}`;
+        }
         await conversationService.addMessage(tenant.id, senderNumber, 'user', processedText, pushName);
 
         // Get conversation history for context
@@ -329,17 +360,55 @@ router.post('/', async (req, res) => {
         await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
 
         // ─── AI TRIGGERS: Check if AI wants to send a payment QR or a lead summary ───
-        const cleanedResponse = aiResponse.replace(/\[SEND_UPI_QR\]/gi, '').replace(/\[SEND_LEAD_SUMMARY\]/gi, '').trim();
-        const shouldSendQr = aiResponse.includes('[SEND_UPI_QR]') && tenant.upiId;
-        const shouldSendLeadSummary = aiResponse.includes('[SEND_LEAD_SUMMARY]');
+        
+        // Define regex for tags (case-insensitive, handles brackets or asterisks)
+        const qrTagRegex = /[\*\[]SEND_UPI_QR[\*\]]/i;
+        const leadTagRegex = /[\*\[]SEND_LEAD_SUMMARY[\*\]]/i;
 
-        // Send reply back through Evolution API with specific instance
-        await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
+        const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
+        const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
+
+        // Remove tags from the response before sending to user
+        const cleanedResponse = aiResponse
+            .replace(new RegExp(qrTagRegex, 'gi'), '')
+            .replace(new RegExp(leadTagRegex, 'gi'), '')
+            .trim();
+
+        // Send reply back through Evolution API
+        // If customer sent a voice message AND TTS is available, reply with voice
+        let voiceSent = false;
+        if (audioMessage && ttsService.isAvailable()) {
+            try {
+                console.log('🔊 Generating voice reply via ElevenLabs...');
+                const audioBase64 = await ttsService.textToSpeech(cleanedResponse);
+                if (audioBase64) {
+                    await evolutionService.sendAudio(tenant.instanceName, senderNumber, audioBase64);
+                    voiceSent = true;
+                    console.log('🔊 Voice reply sent successfully');
+                }
+            } catch (ttsError) {
+                console.error('⚠️  Voice reply failed, falling back to text:', ttsError.message);
+            }
+        }
+
+        // Fallback to text if voice wasn't sent (or wasn't a voice message)
+        if (!voiceSent) {
+            await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
+        }
 
         // If AI triggered a QR, generate and send it
         if (shouldSendQr) {
             console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
-            const qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
+            
+            // Try to find a static pre-uploaded QR first (more reliable)
+            let qrBase64 = await paymentService.getStaticQr(tenant.id);
+
+            // Fallback to dynamic generation if no static image found
+            if (!qrBase64) {
+                console.log(`ℹ️  No static QR found for ${tenant.id}, generating dynamically...`);
+                qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
+            }
+
             if (qrBase64) {
                 await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
                     `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app (Google Pay, PhonePe, Paytm, etc.)`

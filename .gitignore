@@ -1,3 +1,4 @@
 node_modules/
 .env
-node_modules
+tmp/
+src/assets/qr_*.png

@@ -89,13 +89,34 @@ class EvolutionService {
         mediatype: 'image',
         mimetype: 'image/png',
         caption,
-        media: `data:image/png;base64,${base64Image}`,
+        media: base64Image,
         fileName: 'payment_qr.png',
       });
       console.log(`🖼️ Image sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
       console.error(`❌ Failed to send image to ${number} via ${instanceName}:`, error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Send an audio/voice message via WhatsApp
+   * @param {string} instanceName
+   * @param {string} number
+   * @param {string} base64Audio Base64 encoded audio (MP3 or OGG)
+   */
+  async sendAudio(instanceName, number, base64Audio) {
+    if (!instanceName) throw new Error('instanceName is required');
+    try {
+      const response = await this.client.post(`/message/sendWhatsAppAudio/${instanceName}`, {
+        number,
+        audio: `data:audio/mpeg;base64,${base64Audio}`,
+      });
+      console.log(`🔊 Audio sent to ${number} via ${instanceName}`);
+      return response.data;
+    } catch (error) {
+      console.error(`❌ Failed to send audio to ${number} via ${instanceName}:`, error.response?.data || error.message);
       throw error;
     }
   }

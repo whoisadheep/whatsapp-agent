@@ -44,7 +44,22 @@ class AIService {
             return 'You are a helpful business assistant.';
         }
         const catalogText = await productService.getCatalogText(tenant.id);
-        return tenant.systemPrompt + catalogText;
+        
+        const CHANNEL_FORMATTING_RULES = `
+---
+CRITICAL WHATSAPP FORMATTING RULES:
+1. Use *bold* for bold text (NEVER use **bold**).
+2. Use _italics_ for emphasis.
+3. Use bullet points (• or -) for lists.
+4. Keep paragraphs short and use exactly 2 newlines (one empty line) between them for readability.
+5. NEVER use more than 2 consecutive newlines.
+6. Use emojis sparingly to maintain a professional yet warm tone.
+7. If providing a list of products/prices, use a clear "Property: Value" format on new lines.
+8. CRITICAL: Tags like [SEND_UPI_QR] and [SEND_LEAD_SUMMARY] must be written EXACTLY as shown, with square brackets and NO asterisks or additional formatting.
+---
+`;
+
+        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES;
     }
 
     // ─────────────────────── NVIDIA: text ─────────────────────────
@@ -214,6 +229,14 @@ class AIService {
         return null;
     }
 
+    _postProcessResponse(text) {
+        if (!text) return text;
+        return text
+            .replace(/\*\*(.*?)\*\*/g, '*$1*') // Convert **bold** to *bold*
+            .replace(/\n{3,}/g, '\n\n')        // Normalize 3+ newlines to 2
+            .trim();
+    }
+
     // ═══════════════════ main entry point ═════════════════════════
 
     async generateResponse(tenant, conversationHistory, imageData = null) {
@@ -229,7 +252,9 @@ class AIService {
         const systemPrompt = await this.buildSystemPrompt(tenant);
         const response = await this._generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData);
 
-        if (response) return response;
+        if (response) {
+            return this._postProcessResponse(response);
+        }
 
         // All providers exhausted
         return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
