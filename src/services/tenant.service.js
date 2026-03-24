@@ -31,6 +31,22 @@ class TenantService {
     }
 
     /**
+     * Get a tenant configuration by its owner's phone number
+     * @param {string} ownerPhone
+     * @returns {object|null}
+     */
+    getTenantByOwnerPhone(ownerPhone) {
+        if (!ownerPhone) return null;
+        
+        // Remove non-numeric characters for comparison just in case
+        const cleanPhone = ownerPhone.replace(/\D/g, '');
+        
+        return Object.values(this.tenants).find(
+            t => (t.ownerPhone || '').replace(/\D/g, '') === cleanPhone
+        ) || null;
+    }
+
+    /**
      * Get all active tenants
      * @returns {Array} List of tenant config objects
      */

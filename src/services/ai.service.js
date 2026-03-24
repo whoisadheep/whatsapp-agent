@@ -1,82 +1,238 @@
+const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const productService = require('./product.service');
 
 class AIService {
     constructor() {
-        this.apiKey = process.env.GEMINI_API_KEY;
+        // ── NVIDIA (Primary) ──
+        this.nvidiaKey = process.env.NVIDIA_API_KEY;
+        this.nvidiaBaseUrl = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+        this.nvidiaTextModel = process.env.NVIDIA_MODEL_NAME || 'meta/llama-3.1-405b-instruct';
+        this.nvidiaVisionModel = process.env.NVIDIA_VISION_MODEL || 'meta/llama-3.2-90b-vision-instruct';
 
-        if (!this.apiKey || this.apiKey === 'your_gemini_api_key_here') {
-            console.warn('⚠️  GEMINI_API_KEY is not set. AI responses will not work.');
-            this.client = null;
-            return;
+        if (this.nvidiaKey) {
+            this.nvidiaClient = new OpenAI({
+                apiKey: this.nvidiaKey,
+                baseURL: this.nvidiaBaseUrl,
+            });
+            console.log('✅ NVIDIA NIM client initialised (primary)');
+        } else {
+            this.nvidiaClient = null;
+            console.warn('⚠️  NVIDIA_API_KEY not set – NVIDIA provider disabled.');
         }
 
-        this.genAI = new GoogleGenerativeAI(this.apiKey);
+        // ── Gemini (Fallback) ──
+        this.geminiKey = process.env.GEMINI_API_KEY;
+
+        if (this.geminiKey) {
+            this.geminiAI = new GoogleGenerativeAI(this.geminiKey);
+            console.log('✅ Google Gemini client initialised (fallback)');
+        } else {
+            this.geminiAI = null;
+            console.warn('⚠️  GEMINI_API_KEY not set – Gemini fallback disabled.');
+        }
+
+        if (!this.nvidiaClient && !this.geminiAI) {
+            console.error('❌ No AI provider configured! AI responses will not work.');
+        }
     }
 
-    /**
-     * Build the full system prompt with product catalog appended for the given tenant.
-     */
+    // ─────────────────────────── helpers ───────────────────────────
+
     async buildSystemPrompt(tenant) {
         if (!tenant || !tenant.systemPrompt) {
-            return 'You are a helpful business assistant.'; // safe fallback
+            return 'You are a helpful business assistant.';
         }
-
         const catalogText = await productService.getCatalogText(tenant.id);
         return tenant.systemPrompt + catalogText;
     }
 
+    // ─────────────────────── NVIDIA: text ─────────────────────────
+
+    async _nvidiaText(systemPrompt, conversationHistory) {
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            ...conversationHistory.map((msg) => ({
+                role: msg.role === 'assistant' ? 'assistant' : 'user',
+                content: msg.content,
+            })),
+        ];
+
+        const completion = await this.nvidiaClient.chat.completions.create({
+            model: this.nvidiaTextModel,
+            messages,
+            temperature: 0.2,
+            top_p: 0.7,
+            max_tokens: 1024,
+        });
+
+        return completion.choices[0].message.content;
+    }
+
+    // ─────────────────────── NVIDIA: vision ───────────────────────
+
+    async _nvidiaVision(systemPrompt, conversationHistory, imageData) {
+        // Build history messages (text-only for earlier turns)
+        const historyMessages = conversationHistory.slice(0, -1).map((msg) => ({
+            role: msg.role === 'assistant' ? 'assistant' : 'user',
+            content: msg.content,
+        }));
+
+        // Build the last user message with the image
+        const lastMsg = conversationHistory[conversationHistory.length - 1];
+        const userContent = [
+            {
+                type: 'text',
+                text: lastMsg.content || 'What is in this image?',
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:image/jpeg;base64,${imageData}`,
+                },
+            },
+        ];
+
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            ...historyMessages,
+            { role: 'user', content: userContent },
+        ];
+
+        console.log(`📡 [NVIDIA] Sending vision request...`);
+        const completion = await this.nvidiaClient.chat.completions.create({
+            model: this.nvidiaVisionModel,
+            messages,
+            temperature: 0.1,
+            top_p: 0.7,
+            max_tokens: 2048,
+        });
+
+        console.log(`📡 [NVIDIA] Received response`);
+        return completion.choices[0].message.content;
+    }
+
+    // ──────────────────────── Gemini: text ─────────────────────────
+
+    async _geminiText(systemPrompt, conversationHistory) {
+        const model = this.geminiAI.getGenerativeModel({
+            model: 'gemini-2.0-flash-lite',
+            systemInstruction: systemPrompt,
+        });
+
+        const contents = conversationHistory.map((msg) => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }],
+        }));
+
+        const chat = model.startChat({ history: contents.slice(0, -1) });
+        const lastMessage = contents[contents.length - 1];
+        const result = await chat.sendMessage([{ text: lastMessage.parts[0].text }]);
+        return result.response.text();
+    }
+
+    // ──────────────────────── Gemini: vision ──────────────────────
+
+    async _geminiVision(systemPrompt, conversationHistory, imageData) {
+        const model = this.geminiAI.getGenerativeModel({
+            model: 'gemini-2.0-flash-lite',
+            systemInstruction: systemPrompt,
+        });
+
+        const contents = conversationHistory.map((msg) => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }],
+        }));
+
+        const chat = model.startChat({ history: contents.slice(0, -1) });
+        const lastMessage = contents[contents.length - 1];
+
+        const parts = [
+            { text: lastMessage.parts[0].text || 'What is in this image?' },
+            { inlineData: { mimeType: 'image/jpeg', data: imageData } },
+        ];
+
+        console.log(`📡 [Gemini] Sending vision request...`);
+        const result = await chat.sendMessage(parts);
+        console.log(`📡 [Gemini] Received response`);
+        return result.response.text();
+    }
+
+
+
+    // ═══════════════════ provider orchestration ═══════════════════
+
+    async _generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData) {
+        const providers = [];
+
+        if (this.nvidiaClient) {
+            providers.push({
+                name: 'NVIDIA',
+                fn: hasImage
+                    ? () => this._nvidiaVision(systemPrompt, conversationHistory, imageData)
+                    : () => this._nvidiaText(systemPrompt, conversationHistory),
+            });
+        }
+
+        if (this.geminiAI) {
+            providers.push({
+                name: 'Gemini',
+                fn: hasImage
+                    ? () => this._geminiVision(systemPrompt, conversationHistory, imageData)
+                    : () => this._geminiText(systemPrompt, conversationHistory),
+            });
+        }
+
+        for (const provider of providers) {
+            try {
+                console.log(`🔄 Trying provider: ${provider.name}...`);
+                
+                // Add a per-provider timeout (e.g., 15s)
+                const timeoutMs = 15000;
+                const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error(`${provider.name} timed out after ${timeoutMs}ms`)), timeoutMs)
+                );
+
+                const response = await Promise.race([
+                    provider.fn(),
+                    timeoutPromise
+                ]);
+
+                if (response) {
+                    console.log(`🤖 AI response generated via ${provider.name}${hasImage ? ' (vision)' : ''}`);
+                    return response;
+                }
+                console.warn(`⚠️ ${provider.name} returned empty response`);
+            } catch (error) {
+                console.error(`❌ ${provider.name} failed: ${error.message}`);
+                if (error.response?.data) {
+                    console.error('API Error details:', JSON.stringify(error.response.data).slice(0, 500));
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // ═══════════════════ main entry point ═════════════════════════
+
     async generateResponse(tenant, conversationHistory, imageData = null) {
-        if (!this.genAI) {
+        if (!this.nvidiaClient && !this.geminiAI) {
             return "I'm sorry, the AI service is not configured yet. Please contact the administrator.";
         }
 
-        try {
-            // Build system prompt with current product catalog for the specific tenant
-            const systemPrompt = await this.buildSystemPrompt(tenant);
+        const hasImage = Boolean(imageData);
 
-            const model = this.genAI.getGenerativeModel({
-                model: 'gemini-2.5-flash-lite', // Reverting to balanced model for reliability
-                tools: [
-                    {
-                        google_search: {},
-                    },
-                ],
-                systemInstruction: systemPrompt,
-            });
 
-            // Convert conversation history to Gemini format
-            const contents = conversationHistory.map((msg) => ({
-                role: msg.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: msg.content }],
-            }));
 
-            const chat = model.startChat({
-                history: contents.slice(0, -1),
-            });
+        // ── Normal Flow: Text or Vision ──
+        const systemPrompt = await this.buildSystemPrompt(tenant);
+        const response = await this._generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData);
 
-            // Send the latest user message + Image if available
-            const lastMessage = contents[contents.length - 1];
-            const parts = [{ text: lastMessage.parts[0].text }];
+        if (response) return response;
 
-            if (imageData) {
-                parts.push({
-                    inlineData: {
-                        mimeType: 'image/jpeg',
-                        data: imageData,
-                    },
-                });
-            }
-
-            const result = await chat.sendMessage(parts);
-            const response = result.response.text();
-
-            console.log('🤖 AI response generated successfully');
-            return response;
-        } catch (error) {
-            console.error('❌ AI generation failed:', error.message);
-            return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
-        }
+        // All providers exhausted
+        return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
     }
 }
 

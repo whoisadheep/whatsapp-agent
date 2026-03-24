@@ -43,7 +43,7 @@ class EvolutionService {
           enabled: true,
           url: webhookUrl,
           byEvents: false,
-          base64: false,
+          base64: true,
           events: [
             'MESSAGES_UPSERT',
             'CONNECTION_UPDATE',
@@ -133,11 +133,29 @@ class EvolutionService {
     try {
       // In v2, we often use getBase64FromMediaMessage
       const response = await this.client.post(`/chat/getBase64FromMediaMessage/${instanceName}`, {
-        messageId: messageId
+        message: { key: { id: messageId } }
       });
       
       // Evolution API returns base64 inside the response
-      return response.data?.base64 || response.data;
+      let base64 = response.data?.base64 || response.data;
+
+      // If it's an object (not a string), try to extract the base64 field
+      if (typeof base64 === 'object') {
+        base64 = base64.base64 || base64.data || null;
+      }
+
+      if (!base64 || typeof base64 !== 'string') {
+        console.error('❌ downloadMedia: no base64 string in response. Keys:', Object.keys(response.data || {}));
+        return null;
+      }
+
+      // Strip the data URI prefix if present (e.g., "data:image/jpeg;base64,...")
+      if (base64.includes(',')) {
+        base64 = base64.split(',')[1];
+      }
+
+      console.log(`✅ Media downloaded (${Math.round(base64.length / 1024)} KB base64)`);
+      return base64;
     } catch (error) {
       console.error(`❌ Failed to download media from ${instanceName}:`, error.response?.data || error.message);
       return null;

@@ -44,6 +44,7 @@ class LeadService {
      * This avoids extra API calls — fast and free.
      */
     extractInterest(messageText) {
+        if (!messageText || typeof messageText !== 'string') return 'General inquiry';
         const text = messageText.toLowerCase();
 
         // Common interest patterns
@@ -53,6 +54,9 @@ class LeadService {
             { keywords: ['subsidy', 'pm surya', 'yojana', 'government', 'discount on solar'], interest: 'Solar Subsidy Inquiry' },
             { keywords: ['visit', 'assessment', 'address', 'location', 'site marking'], interest: 'Site Assessment Request' },
             { keywords: ['bill', 'electricity bill', 'light bill', 'bill amount'], interest: 'Bill/Sizing Assessment' },
+            { keywords: ['save', 'savings', 'roi', 'return', 'calculator', 'investment'], interest: 'ROI/Savings Calculation' },
+            { keywords: ['warranty', 'guarantee', 'life', 'lifespan', 'kharab'], interest: 'Warranty Inquiry' },
+            { keywords: ['basti', 'gorakhpur', 'khalilabad', 'sant kabir nagar'], interest: 'Local Service Inquiry' },
 
             // General business patterns
             { keywords: ['price', 'cost', 'rate', 'kitna', 'kitne', 'kya rate', 'how much'], interest: 'Pricing inquiry' },

@@ -7,6 +7,8 @@ const productService = require('../services/product.service');
 const leadService = require('../services/lead.service');
 const tenantService = require('../services/tenant.service');
 const paymentService = require('../services/payment.service');
+const transcriptionService = require('../services/transcription.service');
+const reviewService = require('../services/review.service');
 
 const router = express.Router();
 
@@ -216,6 +218,33 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'bill_sent' });
             }
 
+            // ─── GOOGLE REVIEW BOOSTER COMMAND ───
+            if (command.startsWith('#review ')) {
+                const reviewParts = messageText.trim().substring(8).split('|').map(s => s.trim());
+                const customerName = reviewParts[0] || 'Customer';
+                const customerPhone = reviewParts[1] || '';
+
+                if (!customerPhone) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ Please provide a valid number. Example: #review Kishan | 919876543210');
+                    return res.status(200).json({ status: 'error', reason: 'invalid review number' });
+                }
+
+                if (!tenant.reviewLink) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ Google Review Link is not configured for this tenant.');
+                    return res.status(200).json({ status: 'error', reason: 'review link not configured' });
+                }
+
+                const scheduled = await reviewService.scheduleReview(tenant.id, customerName, customerPhone);
+                if (scheduled) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, 
+                        `✅ Scheduled a Google review request for *${customerName}* in 1 hour.`
+                    );
+                } else {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, '❌ Failed to schedule review request (DB error).');
+                }
+                return res.status(200).json({ status: 'review_scheduled' });
+            }
+
             // Any other manual reply from owner → auto-pause AI for this contact
             if (!command.startsWith('#')) {
                 takeoverService.pause(tenant, senderNumber);
@@ -299,9 +328,10 @@ router.post('/', async (req, res) => {
         // Add AI response to conversation history
         await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
 
-        // ─── UPI QR AUTO-TRIGGER: Check if AI wants to send a payment QR ───
-        const cleanedResponse = aiResponse.replace(/\[SEND_UPI_QR\]/gi, '').trim();
+        // ─── AI TRIGGERS: Check if AI wants to send a payment QR or a lead summary ───
+        const cleanedResponse = aiResponse.replace(/\[SEND_UPI_QR\]/gi, '').replace(/\[SEND_LEAD_SUMMARY\]/gi, '').trim();
         const shouldSendQr = aiResponse.includes('[SEND_UPI_QR]') && tenant.upiId;
+        const shouldSendLeadSummary = aiResponse.includes('[SEND_LEAD_SUMMARY]');
 
         // Send reply back through Evolution API with specific instance
         await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
@@ -315,6 +345,18 @@ router.post('/', async (req, res) => {
                     `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app (Google Pay, PhonePe, Paytm, etc.)`
                 );
             }
+        }
+
+        // If AI triggered a Lead Summary, send context to the owner
+        if (shouldSendLeadSummary && tenant.ownerPhone) {
+            console.log(`📋 AI triggered Lead Summary for ${senderNumber} on ${tenant.name}`);
+            
+            // Generate a summary query using AI or just send the recent history
+            // For speed, let's just send the last 5-6 messages between user and AI
+            const recentMsgs = history.slice(-6).map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`).join('\n\n');
+            const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
+            
+            await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
         }
 
         // ─── LEAD CAPTURE: Auto-capture lead from customer message ───

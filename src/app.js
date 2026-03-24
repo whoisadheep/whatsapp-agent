@@ -9,17 +9,20 @@ const db = require('./services/db.service');
 const takeoverService = require('./services/takeover.service');
 const productService = require('./services/product.service');
 const tenantService = require('./services/tenant.service');
+const reviewService = require('./services/review.service');
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(morgan('dev'));
 
 // Routes
 app.use('/webhook', webhookRoutes);
 app.use('/health', healthRoutes);
+app.use('/api/integration', require('./routes/integration.routes'));
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -41,6 +44,7 @@ async function initializeTenants() {
     // Load globally persisted state from DB (Takeovers)
     if (db.isConnected()) {
         await takeoverService.loadFromDb();
+        await reviewService.init();
     }
 
     const tenants = tenantService.getAllTenants();

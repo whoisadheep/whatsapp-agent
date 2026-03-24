@@ -78,12 +78,22 @@ class DatabaseService {
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             )`,
+            `CREATE TABLE IF NOT EXISTS review_requests (
+                id SERIAL PRIMARY KEY,
+                tenant_id VARCHAR(50) NOT NULL,
+                customer_name VARCHAR(255) NOT NULL,
+                customer_phone VARCHAR(20) NOT NULL,
+                scheduled_for TIMESTAMP NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT NOW()
+            )`,
             // Indexes for faster lookups
             `CREATE INDEX IF NOT EXISTS idx_messages_tenant_phone ON messages(tenant_id, phone)`,
             `CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)`,
             `CREATE INDEX IF NOT EXISTS idx_leads_tenant_phone ON leads(tenant_id, phone)`,
             `CREATE INDEX IF NOT EXISTS idx_leads_tenant_status ON leads(tenant_id, status)`,
             `CREATE INDEX IF NOT EXISTS idx_products_tenant ON products(tenant_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_reviews_status_time ON review_requests(status, scheduled_for)`,
         ];
 
         try {
