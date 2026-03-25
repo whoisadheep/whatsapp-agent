@@ -10,6 +10,7 @@ const takeoverService = require('./services/takeover.service');
 const productService = require('./services/product.service');
 const tenantService = require('./services/tenant.service');
 const reviewService = require('./services/review.service');
+const businessCoachService = require('./services/business_coach.service'); // ← NEW
 
 const app = express();
 
@@ -23,28 +24,32 @@ app.use(morgan('dev'));
 app.use('/webhook', webhookRoutes);
 app.use('/health', healthRoutes);
 app.use('/api/integration', require('./routes/integration.routes'));
+app.use('/api/coach', require('./routes/coach.routes'));   // ← NEW
 
 // Root endpoint
 app.get('/', (req, res) => {
     res.json({
         name: 'WhatsApp AI Agent',
-        version: '2.0.0',
+        version: '2.1.0',
         endpoints: {
             webhook: 'POST /webhook',
-            health: 'GET /health',
+            health: 'GET  /health',
+            coachTrigger: 'POST /api/coach/trigger',
+            coachTriggerAll: 'POST /api/coach/trigger-all',
+            coachHistory: 'GET  /api/coach/history/:tenantId',
+            coachStatus: 'GET  /api/coach/status',
         },
     });
 });
 
-// Initialize all tenants and their Evolution API connections on startup
 async function initializeTenants() {
     console.log('\n🔄 Initializing Database...');
     await db.connect();
 
-    // Load globally persisted state from DB (Takeovers)
     if (db.isConnected()) {
         await takeoverService.loadFromDb();
         await reviewService.init();
+        await businessCoachService.init();   // ← NEW
     }
 
     const tenants = tenantService.getAllTenants();
@@ -56,26 +61,20 @@ async function initializeTenants() {
             ? `http://whatsapp-agent:${port}/webhook`
             : `http://localhost:${port}/webhook`);
 
-    // Wait a few seconds for Evolution API to be ready
     await new Promise((resolve) => setTimeout(resolve, 5000));
 
     for (const tenant of tenants) {
         console.log(`\n--- Initializing Tenant: ${tenant.name} ---`);
 
-        // Load products for this specific tenant
         if (db.isConnected()) {
             await productService.loadCache(tenant.id);
             console.log(`📦 Loaded ${productService.getCount(tenant.id)} products for ${tenant.name}`);
         }
 
         try {
-            // Create Evolution instance
             await evolutionService.createInstance(tenant.instanceName);
-
-            // Set webhook
             await evolutionService.setWebhook(tenant.instanceName, webhookUrl);
 
-            // Check connection status
             const status = await evolutionService.getInstanceStatus(tenant.instanceName);
             console.log(`📱 Instance status (${tenant.instanceName}): ${JSON.stringify(status?.instance?.state || 'unknown')}`);
 

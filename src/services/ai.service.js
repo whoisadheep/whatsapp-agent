@@ -23,7 +23,6 @@ class AIService {
 
         // ── Gemini (Fallback) ──
         this.geminiKey = process.env.GEMINI_API_KEY;
-
         if (this.geminiKey) {
             this.geminiAI = new GoogleGenerativeAI(this.geminiKey);
             console.log('✅ Google Gemini client initialised (fallback)');
@@ -44,7 +43,7 @@ class AIService {
             return 'You are a helpful business assistant.';
         }
         const catalogText = await productService.getCatalogText(tenant.id);
-        
+
         const CHANNEL_FORMATTING_RULES = `
 ---
 CRITICAL WHATSAPP FORMATTING RULES:
@@ -59,7 +58,40 @@ CRITICAL WHATSAPP FORMATTING RULES:
 ---
 `;
 
-        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES;
+        // FIX: Added image and social message handling instructions.
+        // Previously the AI had no guidance for images or non-business messages,
+        // causing payment screenshots to get a refusal and social messages to get
+        // a cold sales deflection.
+        const IMAGE_HANDLING_RULES = `
+---
+IMAGE HANDLING RULES:
+When the customer sends an image, the message will start with [CUSTOMER SENT AN IMAGE ...].
+- If it is a PAYMENT_SCREENSHOT: Acknowledge the payment warmly. Thank the customer. 
+  Ask what product/service the payment is for if unclear. NEVER say you cannot help with this.
+  Example: "Thank you for the payment! ✅ Could you let us know which product or service this payment is for so we can process it?"
+- If it is a PRODUCT_IMAGE or PRODUCT_QUERY_IMAGE: Describe what you see and help with their query.
+- If it is an INVOICE_OR_BILL: Help the customer with their billing query.
+- If image download failed (noted in the context): Respond warmly based on the caption/type context provided. Never say "I'm not able to provide help with this conversation."
+- NEVER respond with "I'm not able to provide help with this conversation" for any image type.
+---
+`;
+
+        const SOCIAL_MESSAGE_RULES = `
+---
+SOCIAL & NON-BUSINESS MESSAGE RULES:
+People sometimes send greetings, religious messages, good morning/night wishes, or general chit-chat.
+Handle these gracefully WITHOUT a cold business deflection:
+- For greetings (hi, hello, good morning, good night, namaste): Respond warmly and briefly, then offer help. 
+  Do NOT say "Sorry, I can only help with [product]..." for a simple greeting.
+- For religious/devotional forwards (shlokas, prayers, quotes): Acknowledge respectfully with a one-line warm reply (e.g., "Jai Shiv Shambhu! 🙏 Koi madad chahiye to batayein."). 
+  Do NOT follow with a sales pitch.
+- For "how are you" or personal chat: Respond briefly and warmly, then gently steer toward business.
+- Only deflect to "main sirf X mein help kar sakta hoon" if the person is asking about something completely unrelated AND is clearly expecting a business-type answer.
+The goal: never make a person feel like they messaged a cold robot when they were just being friendly.
+---
+`;
+
+        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES;
     }
 
     // ─────────────────────── NVIDIA: text ─────────────────────────
@@ -87,13 +119,11 @@ CRITICAL WHATSAPP FORMATTING RULES:
     // ─────────────────────── NVIDIA: vision ───────────────────────
 
     async _nvidiaVision(systemPrompt, conversationHistory, imageData) {
-        // Build history messages (text-only for earlier turns)
         const historyMessages = conversationHistory.slice(0, -1).map((msg) => ({
             role: msg.role === 'assistant' ? 'assistant' : 'user',
             content: msg.content,
         }));
 
-        // Build the last user message with the image
         const lastMsg = conversationHistory[conversationHistory.length - 1];
         const userContent = [
             {
@@ -173,8 +203,6 @@ CRITICAL WHATSAPP FORMATTING RULES:
         return result.response.text();
     }
 
-
-
     // ═══════════════════ provider orchestration ═══════════════════
 
     async _generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData) {
@@ -201,17 +229,13 @@ CRITICAL WHATSAPP FORMATTING RULES:
         for (const provider of providers) {
             try {
                 console.log(`🔄 Trying provider: ${provider.name}...`);
-                
-                // Add a per-provider timeout (e.g., 15s)
+
                 const timeoutMs = 15000;
-                const timeoutPromise = new Promise((_, reject) => 
+                const timeoutPromise = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error(`${provider.name} timed out after ${timeoutMs}ms`)), timeoutMs)
                 );
 
-                const response = await Promise.race([
-                    provider.fn(),
-                    timeoutPromise
-                ]);
+                const response = await Promise.race([provider.fn(), timeoutPromise]);
 
                 if (response) {
                     console.log(`🤖 AI response generated via ${provider.name}${hasImage ? ' (vision)' : ''}`);
@@ -233,7 +257,7 @@ CRITICAL WHATSAPP FORMATTING RULES:
         if (!text) return text;
         return text
             .replace(/\*\*(.*?)\*\*/g, '*$1*') // Convert **bold** to *bold*
-            .replace(/\n{3,}/g, '\n\n')        // Normalize 3+ newlines to 2
+            .replace(/\n{3,}/g, '\n\n')         // Normalize 3+ newlines to 2
             .trim();
     }
 
@@ -245,10 +269,6 @@ CRITICAL WHATSAPP FORMATTING RULES:
         }
 
         const hasImage = Boolean(imageData);
-
-
-
-        // ── Normal Flow: Text or Vision ──
         const systemPrompt = await this.buildSystemPrompt(tenant);
         const response = await this._generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData);
 
@@ -256,7 +276,6 @@ CRITICAL WHATSAPP FORMATTING RULES:
             return this._postProcessResponse(response);
         }
 
-        // All providers exhausted
         return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
     }
 }

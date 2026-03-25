@@ -18,6 +18,67 @@ const router = express.Router();
 const SERVER_START_TIME = Math.floor(Date.now() / 1000) - 600;
 console.log(`🕐 Server start timestamp: ${SERVER_START_TIME} — messages before this will be ignored`);
 
+// ─── HELPERS ────────────────────────────────────────────────────────────────
+
+/**
+ * Classify the intent of an incoming message for context hints.
+ * Returns a short string injected into conversation history so the AI
+ * always has useful context even when image download fails.
+ */
+function classifyImageContext(caption) {
+    if (!caption) return null;
+    const text = caption.toLowerCase();
+
+    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|bank|transfer|₹|\d{3,}/))
+        return 'PAYMENT_SCREENSHOT';
+    if (text.match(/invoice|bill|receipt|order/))
+        return 'INVOICE_OR_BILL';
+    if (text.match(/product|item|catalog|price|rate/))
+        return 'PRODUCT_IMAGE';
+    if (text.match(/cctv|camera|biometric|device|model/))
+        return 'PRODUCT_QUERY_IMAGE';
+    if (text.match(/location|map|address|site|place/))
+        return 'LOCATION_IMAGE';
+    return 'GENERAL_IMAGE';
+}
+
+/**
+ * Build a rich context string for the conversation history when an image arrives.
+ * This ensures the AI always has useful info even if download failed.
+ */
+function buildImageContextText(imageDownloaded, caption, imageType) {
+    const type = imageType || classifyImageContext(caption) || 'GENERAL_IMAGE';
+
+    let context = `[CUSTOMER SENT AN IMAGE`;
+    if (caption) context += ` with caption: "${caption}"`;
+
+    // Add semantic hints based on detected type
+    switch (type) {
+        case 'PAYMENT_SCREENSHOT':
+            context += ` — This appears to be a UPI/payment screenshot. The customer likely wants to confirm their payment or needs help related to this transaction.`;
+            break;
+        case 'INVOICE_OR_BILL':
+            context += ` — This appears to be an invoice or bill. Help the customer with their billing query.`;
+            break;
+        case 'PRODUCT_IMAGE':
+        case 'PRODUCT_QUERY_IMAGE':
+            context += ` — This appears to be a product image. Acknowledge it and help identify or advise on the product.`;
+            break;
+        case 'LOCATION_IMAGE':
+            context += ` — This appears to be a location or map image.`;
+            break;
+        default:
+            context += `.`;
+    }
+
+    if (!imageDownloaded) {
+        context += ` Note: Image could not be loaded for visual analysis — respond based on caption context only.`;
+    }
+
+    context += `]`;
+    return context;
+}
+
 // Process incoming webhook events from Evolution API
 router.post('/', async (req, res) => {
     try {
@@ -28,11 +89,7 @@ router.post('/', async (req, res) => {
         if (event === 'connection.update') {
             const state = body.data?.state;
             console.log(`📱 Connection update: ${state}`);
-
-            if (state === 'open') {
-                console.log('✅ WhatsApp connected successfully!');
-            }
-
+            if (state === 'open') console.log('✅ WhatsApp connected successfully!');
             return res.status(200).json({ status: 'ok' });
         }
 
@@ -49,16 +106,15 @@ router.post('/', async (req, res) => {
 
         const data = body.data;
 
-        // ─── SKIP OLD MESSAGES: Ignore messages from before server started ───
+        // ─── SKIP OLD MESSAGES ───────────────────────────────────────────────
         const messageTimestamp = data.messageTimestamp || data.key?.messageTimestamp || 0;
         if (messageTimestamp && messageTimestamp < SERVER_START_TIME) {
             return res.status(200).json({ status: 'ignored', reason: 'old message (before server start)' });
         }
 
-        // ─── IDENTIFY TENANT ───
+        // ─── IDENTIFY TENANT ────────────────────────────────────────────────
         const instanceName = body.instance || body.instanceName;
         const tenant = tenantService.getTenantByInstance(instanceName);
-
         if (!tenant) {
             console.log(`⚠️  Webhook received for unknown instance: ${instanceName}, ignoring`);
             return res.status(200).json({ status: 'ignored', reason: 'unknown tenant' });
@@ -67,7 +123,7 @@ router.post('/', async (req, res) => {
         const remoteJid = data.key?.remoteJid || '';
         const senderNumber = remoteJid.replace('@s.whatsapp.net', '').replace('@g.us', '');
 
-        // ─── OWNER COMMANDS: Detect owner's manual replies ───
+        // ─── OWNER COMMANDS ──────────────────────────────────────────────────
         if (data.key?.fromMe) {
             const messageText =
                 data.message?.conversation ||
@@ -75,7 +131,6 @@ router.post('/', async (req, res) => {
 
             const command = messageText.trim().toLowerCase();
 
-            // ─── AI CONTROL COMMANDS ───
             if (command === '#ai on') {
                 takeoverService.resume(tenant.id, senderNumber);
                 console.log(`▶️  Owner resumed AI for ${senderNumber} on ${tenant.name}`);
@@ -96,21 +151,14 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'ai_status', contact: senderNumber, aiStatus: status });
             }
 
-            // ─── PRODUCT COMMANDS ───
             if (messageText.trim().toLowerCase().startsWith('#add ')) {
                 const parts = messageText.trim().substring(5).split('|').map(s => s.trim());
                 const name = parts[0] || '';
                 const price = parts[1] || '';
                 const description = parts[2] || '';
-
-                if (!name) {
-                    console.log('⚠️  #add command missing product name');
-                    return res.status(200).json({ status: 'error', reason: 'missing product name' });
-                }
-
+                if (!name) return res.status(200).json({ status: 'error', reason: 'missing product name' });
                 const product = await productService.addProduct(tenant.id, name, price, description);
                 if (product) {
-                    // Send confirmation back to the owner in the chat
                     await evolutionService.sendText(tenant.instanceName, senderNumber,
                         `✅ Product added!\n\n📦 *${name}*\n💰 ${price || 'No price set'}\n📝 ${description || 'No description'}\n\nTotal products: ${productService.getCount(tenant.id)}`
                     );
@@ -153,7 +201,6 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'product_list' });
             }
 
-            // ─── LEAD COMMANDS ───
             if (command === '#leads') {
                 const leads = await leadService.getRecentLeads(tenant.id, 10);
                 if (leads.length === 0) {
@@ -174,41 +221,31 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'leads_list' });
             }
 
-            // ─── PAIRING COMMAND ───
             if (command.startsWith('#pair ')) {
                 const pairNumber = command.substring(6).trim().replace(/\D/g, '');
                 if (!pairNumber) {
                     await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ Please provide a valid number. Example: #pair 919005149776');
                     return res.status(200).json({ status: 'error', reason: 'invalid pairing number' });
                 }
-
                 const code = await evolutionService.getPairingCode(tenant.instanceName, pairNumber);
                 if (code) {
-                    await evolutionService.sendText(tenant.instanceName, senderNumber, 
-                        `🔗 *Pairing Code for ${tenant.name}*\n\n` +
-                        `🔢 Code: *${code}*\n\n` +
-                        `Steps for the owner:\n` +
-                        `1. Open WhatsApp -> Linked Devices\n` +
-                        `2. Link a Device -> *Link with phone number instead*\n` +
-                        `3. Enter the code above.`
+                    await evolutionService.sendText(tenant.instanceName, senderNumber,
+                        `🔗 *Pairing Code for ${tenant.name}*\n\n🔢 Code: *${code}*\n\nSteps:\n1. Open WhatsApp -> Linked Devices\n2. Link a Device -> *Link with phone number instead*\n3. Enter the code above.`
                     );
                 } else {
                     await evolutionService.sendText(tenant.instanceName, senderNumber, '❌ Failed to generate pairing code. Ensure the instance is not already connected.');
                 }
-                    return res.status(200).json({ status: 'pairing_code_generated' });
+                return res.status(200).json({ status: 'pairing_code_generated' });
             }
 
-            // ─── BILL / PAYMENT COMMAND ───
             if (command.startsWith('#bill ')) {
                 const billParts = messageText.trim().substring(6).split('|').map(s => s.trim());
                 const amount = parseFloat(billParts[0]) || 0;
                 const description = billParts[1] || 'Payment';
-
                 if (!tenant.upiId) {
                     await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ UPI is not configured for this tenant.');
                     return res.status(200).json({ status: 'error', reason: 'upi not configured' });
                 }
-
                 const qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name, amount, description);
                 if (qrBase64) {
                     await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
@@ -220,25 +257,21 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'bill_sent' });
             }
 
-            // ─── GOOGLE REVIEW BOOSTER COMMAND ───
             if (command.startsWith('#review ')) {
                 const reviewParts = messageText.trim().substring(8).split('|').map(s => s.trim());
                 const customerName = reviewParts[0] || 'Customer';
                 const customerPhone = reviewParts[1] || '';
-
                 if (!customerPhone) {
                     await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ Please provide a valid number. Example: #review Kishan | 919876543210');
                     return res.status(200).json({ status: 'error', reason: 'invalid review number' });
                 }
-
                 if (!tenant.reviewLink) {
                     await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ Google Review Link is not configured for this tenant.');
                     return res.status(200).json({ status: 'error', reason: 'review link not configured' });
                 }
-
                 const scheduled = await reviewService.scheduleReview(tenant.id, customerName, customerPhone);
                 if (scheduled) {
-                    await evolutionService.sendText(tenant.instanceName, senderNumber, 
+                    await evolutionService.sendText(tenant.instanceName, senderNumber,
                         `✅ Scheduled a Google review request for *${customerName}* in 1 hour.`
                     );
                 } else {
@@ -256,10 +289,9 @@ router.post('/', async (req, res) => {
             return res.status(200).json({ status: 'ignored', reason: 'fromMe' });
         }
 
-        // Handle group messages selectively
+        // ─── GROUP FILTER ────────────────────────────────────────────────────
         if (remoteJid.endsWith('@g.us')) {
             const allowedGroups = tenant.allowedGroups || [];
-
             if (!allowedGroups.includes('*') && !allowedGroups.includes(remoteJid)) {
                 console.log(`⏭️  Message from group ${remoteJid} on ${tenant.name}, skipping.`);
                 return res.status(200).json({ status: 'ignored', reason: 'group not in allowedGroups' });
@@ -272,11 +304,11 @@ router.post('/', async (req, res) => {
             return res.status(200).json({ status: 'ignored', reason: 'status broadcast' });
         }
 
-        // Extract message text and media
+        // ─── EXTRACT MESSAGE CONTENT ─────────────────────────────────────────
         const message = data.message;
         const imageMessage = message?.imageMessage;
         const audioMessage = message?.audioMessage;
-        
+
         let messageText =
             message?.conversation ||
             message?.extendedTextMessage?.text ||
@@ -284,7 +316,7 @@ router.post('/', async (req, res) => {
             message?.videoMessage?.caption ||
             null;
 
-        // ─── VOICE MESSAGE HANDLING: Transcribe audio to text ───
+        // ─── VOICE MESSAGE HANDLING ───────────────────────────────────────────
         if (audioMessage) {
             console.log(`🎙️  Voice message detected (${data.key.id}), downloading...`);
             const audioBase64 = await evolutionService.downloadMedia(tenant.instanceName, data.key.id);
@@ -297,7 +329,9 @@ router.post('/', async (req, res) => {
                     console.log(`🎙️  Voice transcribed: "${transcribedText.slice(0, 100)}${transcribedText.length > 100 ? '...' : ''}"`);
                 } else {
                     console.error('❌ Voice transcription failed, replying with error');
-                    await evolutionService.sendText(tenant.instanceName, senderNumber, "Sorry, I couldn't understand your voice message. Could you please type your message instead?");
+                    await evolutionService.sendText(tenant.instanceName, senderNumber,
+                        "Sorry, I couldn't understand your voice message. Could you please type your message instead?"
+                    );
                     return res.status(200).json({ status: 'processed', reason: 'voice transcription failed' });
                 }
             } else {
@@ -313,73 +347,91 @@ router.post('/', async (req, res) => {
 
         const pushName = data.pushName || 'Customer';
 
-        // ─── IMAGE HANDLING: Download image if message is a photo ───
+        // ─── IMAGE HANDLING ──────────────────────────────────────────────────
+        // FIX: Detect image type from caption BEFORE downloading, so even if
+        // download fails we can still give the AI useful context.
         let imageData = null;
+        let imageContextText = null;
+
         if (imageMessage) {
-            console.log(`🖼️  Image message detected (${data.key.id}), downloading...`);
+            const caption = imageMessage.caption || '';
+            const detectedType = classifyImageContext(caption);
+            console.log(`🖼️  Image message detected (type: ${detectedType || 'GENERAL'}, id: ${data.key.id}), downloading...`);
+
             imageData = await evolutionService.downloadMedia(tenant.instanceName, data.key.id);
+
             if (imageData) {
-                console.log('✅ Image downloaded successfully');
+                console.log(`✅ Image downloaded successfully (${Math.round(imageData.length / 1024)} KB base64)`);
+            } else {
+                console.warn('⚠️  Image download failed — AI will respond using caption context only');
             }
+
+            // Always build rich context text for the conversation history
+            imageContextText = buildImageContextText(!!imageData, caption, detectedType);
         }
 
-        // Ignore messages from explicitly ignored numbers for this tenant
+        // ─── IGNORED NUMBERS ─────────────────────────────────────────────────
         const ignoredNumbers = tenant.ignoredNumbers || [];
         if (ignoredNumbers.includes(senderNumber)) {
             console.log(`⏭️  Message from ignored number ${senderNumber} on ${tenant.name}, skipping`);
             return res.status(200).json({ status: 'ignored', reason: 'ignored number' });
         }
 
-        // ─── HUMAN TAKEOVER: Skip AI if owner has taken over this chat ───
+        // ─── HUMAN TAKEOVER CHECK ─────────────────────────────────────────────
         if (takeoverService.isPaused(tenant.id, senderNumber)) {
-            console.log(`⏸️  AI is paused for ${senderNumber} on ${tenant.name} (human takeover active — ${takeoverService.getRemainingTime(tenant.id, senderNumber)})`);
+            console.log(`⏸️  AI is paused for ${senderNumber} on ${tenant.name} (${takeoverService.getRemainingTime(tenant.id, senderNumber)})`);
             return res.status(200).json({ status: 'paused', reason: 'human takeover active' });
         }
 
         const mediaTag = audioMessage ? 'VOICE' : (imageMessage ? 'IMAGE' : '');
-        console.log(`\n📩 Message content [${mediaTag ? mediaTag + ' + ' : ''}${messageText || 'No text'}] from ${pushName} (${senderNumber}) to ${tenant.name}`);
+        console.log(`\n📩 Message [${mediaTag ? mediaTag + ' + ' : ''}${messageText || 'No text'}] from ${pushName} (${senderNumber}) → ${tenant.name}`);
 
-        // Add user message to conversation history (with DB persistence)
-        // If image/voice, we note it in text for context history
-        let processedText = messageText;
+        // ─── BUILD CONVERSATION HISTORY ENTRY ────────────────────────────────
+        // FIX: For images, store the rich semantic context string instead of the
+        // bare "[SENT AN IMAGE]" placeholder. This gives the AI real context to work with.
+        let processedText;
         if (audioMessage) {
             processedText = `[SENT A VOICE MESSAGE] ${messageText || ''}`;
         } else if (imageMessage) {
-            processedText = `[SENT AN IMAGE] ${messageText || ''}`;
+            // Use the rich context; append any text the user also typed alongside the image
+            processedText = imageContextText;
+            if (messageText && !imageMessage.caption) {
+                // User typed extra text not already in the caption
+                processedText += ` User also wrote: "${messageText}"`;
+            }
+        } else {
+            processedText = messageText;
         }
+
         await conversationService.addMessage(tenant.id, senderNumber, 'user', processedText, pushName);
 
         // Get conversation history for context
         const history = await conversationService.getHistory(tenant.id, senderNumber);
 
-        // Generate AI response 
+        // ─── GENERATE AI RESPONSE ─────────────────────────────────────────────
         console.log(`🤔 Generating AI response for ${tenant.name}...`);
         const aiResponse = await aiService.generateResponse(tenant, history, imageData);
 
         // Add AI response to conversation history
         await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
 
-        // ─── AI TRIGGERS: Check if AI wants to send a payment QR or a lead summary ───
-        
-        // Define regex for tags (case-insensitive, handles brackets or asterisks)
+        // ─── AI TRIGGER TAGS ──────────────────────────────────────────────────
         const qrTagRegex = /[\*\[]SEND_UPI_QR[\*\]]/i;
         const leadTagRegex = /[\*\[]SEND_LEAD_SUMMARY[\*\]]/i;
 
         const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
         const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
 
-        // Remove tags from the response before sending to user
         const cleanedResponse = aiResponse
             .replace(new RegExp(qrTagRegex, 'gi'), '')
             .replace(new RegExp(leadTagRegex, 'gi'), '')
             .trim();
 
-        // Send reply back through Evolution API
-        // If customer sent a voice message AND TTS is available, reply with voice
+        // ─── SEND REPLY ───────────────────────────────────────────────────────
         let voiceSent = false;
         if (audioMessage && ttsService.isAvailable()) {
             try {
-                console.log('🔊 Generating voice reply via ElevenLabs...');
+                console.log('🔊 Generating voice reply via Edge TTS...');
                 const audioBase64 = await ttsService.textToSpeech(cleanedResponse);
                 if (audioBase64) {
                     await evolutionService.sendAudio(tenant.instanceName, senderNumber, audioBase64);
@@ -391,24 +443,18 @@ router.post('/', async (req, res) => {
             }
         }
 
-        // Fallback to text if voice wasn't sent (or wasn't a voice message)
         if (!voiceSent) {
             await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
         }
 
-        // If AI triggered a QR, generate and send it
+        // ─── SEND UPI QR ──────────────────────────────────────────────────────
         if (shouldSendQr) {
             console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
-            
-            // Try to find a static pre-uploaded QR first (more reliable)
             let qrBase64 = await paymentService.getStaticQr(tenant.id);
-
-            // Fallback to dynamic generation if no static image found
             if (!qrBase64) {
                 console.log(`ℹ️  No static QR found for ${tenant.id}, generating dynamically...`);
                 qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
             }
-
             if (qrBase64) {
                 await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
                     `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app (Google Pay, PhonePe, Paytm, etc.)`
@@ -416,25 +462,28 @@ router.post('/', async (req, res) => {
             }
         }
 
-        // If AI triggered a Lead Summary, send context to the owner
+        // ─── SEND LEAD SUMMARY TO OWNER ───────────────────────────────────────
         if (shouldSendLeadSummary && tenant.ownerPhone) {
             console.log(`📋 AI triggered Lead Summary for ${senderNumber} on ${tenant.name}`);
-            
-            // Generate a summary query using AI or just send the recent history
-            // For speed, let's just send the last 5-6 messages between user and AI
-            const recentMsgs = history.slice(-6).map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`).join('\n\n');
-            const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
-            
+            const recentMsgs = history.slice(-6)
+                .map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`)
+                .join('\n\n');
+            const summaryMessage =
+                `🔔 *New Lead Collected!* — ${tenant.name}\n\n` +
+                `📞 Customer Phone: ${senderNumber}\n` +
+                `👤 Customer Name: ${pushName}\n\n` +
+                `*Recent context:*\n${recentMsgs}\n\n` +
+                `_Reply with #ai off to take over this chat manually._`;
             await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
         }
 
-        // ─── LEAD CAPTURE: Auto-capture lead from customer message ───
+        // ─── AUTO LEAD CAPTURE ────────────────────────────────────────────────
         const interest = leadService.extractInterest(messageText);
         leadService.captureLead(tenant.id, senderNumber, pushName, interest);
 
-        console.log(`✅ Conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Paused chats: ${takeoverService.getPausedCount()} | Products: ${productService.getCount(tenant.id)}`);
-
+        console.log(`✅ ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Paused: ${takeoverService.getPausedCount()} | Products: ${productService.getCount(tenant.id)}`);
         return res.status(200).json({ status: 'processed' });
+
     } catch (error) {
         console.error('❌ Webhook processing error:', error.message);
         return res.status(200).json({ status: 'error', message: error.message });
