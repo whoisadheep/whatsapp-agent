@@ -54,7 +54,32 @@ CRITICAL WHATSAPP FORMATTING RULES:
 5. NEVER use more than 2 consecutive newlines.
 6. Use emojis sparingly to maintain a professional yet warm tone.
 7. If providing a list of products/prices, use a clear "Property: Value" format on new lines.
-8. CRITICAL: Tags like [SEND_UPI_QR] and [SEND_LEAD_SUMMARY] must be written EXACTLY as shown, with square brackets and NO asterisks or additional formatting.
+8. CRITICAL: Tags like [SEND_UPI_QR], [SEND_LEAD_SUMMARY], and [SCHEDULE_REVIEW] must be written EXACTLY as shown, with square brackets and NO asterisks or additional formatting.
+---
+`;
+
+        const REVIEW_TRIGGER_RULES = `
+---
+GOOGLE REVIEW — AUTO-TRIGGER RULES:
+After your reply, append the tag [SCHEDULE_REVIEW] (invisible to customer, caught by the system)
+when ALL of the following are true:
+1. The conversation has reached a natural positive close — customer said thank you, confirmed receipt, said goodbye, expressed satisfaction, or confirmed a purchase/booking.
+2. The customer's sentiment is clearly positive or neutral-positive.
+3. The business has a review link configured (Purvodaya and SaiInfotek do).
+
+TRIGGER examples (append [SCHEDULE_REVIEW]):
+- Customer says: "ok bhai mil gaya", "thanks", "theek hai", "done", "received", "perfect", "bahut accha"
+- Customer confirmed a payment or purchase was completed
+- You just resolved a complaint and customer accepted the resolution
+- Conversation ends with "bye", "ok", "👍", "✅"
+
+DO NOT TRIGGER examples (do NOT append [SCHEDULE_REVIEW]):
+- Customer is still asking questions or negotiating
+- Customer expressed frustration, complaint, or dissatisfaction
+- It's just a greeting with no transaction context
+- Customer said goodbye mid-conversation without a resolution
+
+Only append [SCHEDULE_REVIEW] ONCE per conversation closing. If you already appended it in a recent message, do not append again.
 ---
 `;
 
@@ -91,7 +116,7 @@ The goal: never make a person feel like they messaged a cold robot when they wer
 ---
 `;
 
-        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES;
+        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES;
     }
 
     // ─────────────────────── NVIDIA: text ─────────────────────────

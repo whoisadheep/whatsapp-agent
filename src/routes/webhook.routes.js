@@ -10,6 +10,7 @@ const paymentService = require('../services/payment.service');
 const transcriptionService = require('../services/transcription.service');
 const reviewService = require('../services/review.service');
 const ttsService = require('../services/tts.service');
+const broadcastService = require('../services/broadcast.service');
 
 const router = express.Router();
 
@@ -280,6 +281,83 @@ router.post('/', async (req, res) => {
                 return res.status(200).json({ status: 'review_scheduled' });
             }
 
+            // --- BROADCAST COMMANDS ---
+            if (command.startsWith('#broadcast ')) {
+                const parts = messageText.trim().substring(11).split('|').map(s => s.trim());
+                const subCommand = parts[0]?.toLowerCase();
+
+                // #broadcast status
+                if (subCommand === 'status') {
+                    const activeJob = broadcastService.getActiveJob(tenant.id);
+                    if (!activeJob) {
+                        const history = await broadcastService.getHistory(tenant.id, 1);
+                        if (history.length > 0) {
+                            const last = history[0];
+                            await evolutionService.sendText(tenant.instanceName, senderNumber,
+                                `📊 *Last Broadcast Status* — Job #${last.id}\n\n` +
+                                `Status: ${last.status.toUpperCase()}\n` +
+                                `Sent: ${last.sent} | Failed: ${last.failed}\n` +
+                                `Completed: ${new Date(last.completed_at).toLocaleString()}`
+                            );
+                        } else {
+                            await evolutionService.sendText(tenant.instanceName, senderNumber, 'ℹ️ No broadcast history found.');
+                        }
+                    } else {
+                        await evolutionService.sendText(tenant.instanceName, senderNumber,
+                            `📢 *Broadcast in progress* — Job #${activeJob.jobId}\n\n` +
+                            `Check your notifications for progress updates.`
+                        );
+                    }
+                    return res.status(200).json({ status: 'broadcast_status' });
+                }
+
+                // #broadcast stop
+                if (subCommand === 'stop') {
+                    const stopped = broadcastService.cancel(tenant.id);
+                    if (stopped) {
+                        await evolutionService.sendText(tenant.instanceName, senderNumber, '🛑 Stopping broadcast... you will receive a final update shortly.');
+                    } else {
+                        await evolutionService.sendText(tenant.instanceName, senderNumber, '⚠️ No active broadcast to stop.');
+                    }
+                    return res.status(200).json({ status: 'broadcast_stopped' });
+                }
+
+                // #broadcast send | audience | message
+                if (subCommand === 'send') {
+                    const audience = parts[1] || 'all';
+                    const message = parts[2];
+
+                    if (!message) {
+                        await evolutionService.sendText(tenant.instanceName, senderNumber,
+                            '⚠️ Missing message. Format: #broadcast send | audience | Your message here\n\n' +
+                            'Audience types: all, leads, new_leads, customers'
+                        );
+                        return res.status(200).json({ status: 'error', reason: 'missing broadcast message' });
+                    }
+
+                    try {
+                        const { jobId, total } = await broadcastService.start(tenant, audience, message, senderNumber);
+                        await evolutionService.sendText(tenant.instanceName, senderNumber,
+                            `🚀 *Broadcast Started!* — Job #${jobId}\n\n` +
+                            `Target: ${total} contacts (${audience})\n` +
+                            `I will send you progress updates every 25 messages.`
+                        );
+                    } catch (err) {
+                        await evolutionService.sendText(tenant.instanceName, senderNumber, `❌ Error: ${err.message}`);
+                    }
+                    return res.status(200).json({ status: 'broadcast_started' });
+                }
+
+                await evolutionService.sendText(tenant.instanceName, senderNumber,
+                    `📢 *Broadcast Commands:*\n\n` +
+                    `• #broadcast send | audience | message\n` +
+                    `• #broadcast status\n` +
+                    `• #broadcast stop\n\n` +
+                    `_Audiences: all, leads, new_leads, customers_`
+                );
+                return res.status(200).json({ status: 'broadcast_help' });
+            }
+
             // Any other manual reply from owner → auto-pause AI for this contact
             if (!command.startsWith('#')) {
                 takeoverService.pause(tenant, senderNumber);
@@ -346,6 +424,17 @@ router.post('/', async (req, res) => {
         }
 
         const pushName = data.pushName || 'Customer';
+
+        // ─── BROADCAST OPT-OUT HANDLING ──────────────────────────────────────
+        if (messageText && (messageText.toUpperCase() === 'STOP' || messageText.toUpperCase() === 'UNSUBSCRIBE')) {
+            const optedOut = await broadcastService.optOut(tenant.id, senderNumber);
+            if (optedOut) {
+                await evolutionService.sendText(tenant.instanceName, senderNumber,
+                    `🚫 You have been opted out of future broadcasts from ${tenant.name}. You can still message us here anytime for help!`
+                );
+                return res.status(200).json({ status: 'opt_out_success', contact: senderNumber });
+            }
+        }
 
         // ─── IMAGE HANDLING ──────────────────────────────────────────────────
         // FIX: Detect image type from caption BEFORE downloading, so even if

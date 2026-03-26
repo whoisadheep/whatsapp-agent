@@ -11,6 +11,7 @@ const productService = require('./services/product.service');
 const tenantService = require('./services/tenant.service');
 const reviewService = require('./services/review.service');
 const businessCoachService = require('./services/business_coach.service'); // ← NEW
+const broadcastService = require('./services/broadcast.service');         // ← NEW
 
 const app = express();
 
@@ -50,6 +51,7 @@ async function initializeTenants() {
         await takeoverService.loadFromDb();
         await reviewService.init();
         await businessCoachService.init();   // ← NEW
+        await broadcastService.ensureTables();  // ← NEW
     }
 
     const tenants = tenantService.getAllTenants();
