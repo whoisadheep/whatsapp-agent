@@ -19,6 +19,15 @@ const router = express.Router();
 const SERVER_START_TIME = Math.floor(Date.now() / 1000) - 600;
 console.log(`🕐 Server start timestamp: ${SERVER_START_TIME} — messages before this will be ignored`);
 
+// ─── ANTI-DUPLICATE CACHE ───
+const processedMessageIds = new Set();
+const MAX_PROCESSED_IDS = 200;
+
+// ─── DEBOUNCER STATE ───
+// We map chatKey -> { timer, imageData, audioMessage } so we don't lose media during rapid-fire texts
+const typingState = new Map();
+const BATCH_DELAY_MS = 4000; // Wait 4 seconds after their last message before replying
+
 // Process incoming webhook events from Evolution API
 router.post('/', async (req, res) => {
     try {
@@ -54,6 +63,19 @@ router.post('/', async (req, res) => {
         const messageTimestamp = data.messageTimestamp || data.key?.messageTimestamp || 0;
         if (messageTimestamp && messageTimestamp < SERVER_START_TIME) {
             return res.status(200).json({ status: 'ignored', reason: 'old message (before server start)' });
+        }
+
+        // ─── DEDUPLICATION CHECK ───
+        const messageId = data.key?.id;
+        if (messageId) {
+            if (processedMessageIds.has(messageId)) {
+                return res.status(200).json({ status: 'ignored', reason: 'duplicate message' });
+            }
+            processedMessageIds.add(messageId);
+            if (processedMessageIds.size > MAX_PROCESSED_IDS) {
+                const iterator = processedMessageIds.values();
+                processedMessageIds.delete(iterator.next().value);
+            }
         }
 
         // ─── IDENTIFY TENANT ───
@@ -398,7 +420,14 @@ router.post('/', async (req, res) => {
             }
 
             // Any other manual reply from owner → auto-pause AI for this contact
-            if (!command.startsWith('#')) {
+            if (!command.startsWith('#') && messageText.trim() !== '') {
+                // ─── LOG OWNER MANUAL REPLIES ───
+                let loggedText = messageText;
+                if (ownerImageMessage) loggedText = `[Sent an Image] ${messageText}`;
+                else if (data.message?.videoMessage) loggedText = `[Sent a Video] ${messageText}`;
+
+                await conversationService.addMessage(tenant.id, senderNumber, 'assistant', `[Owner Manually Sent]: ${loggedText}`);
+
                 takeoverService.pause(tenant, senderNumber);
                 console.log(`🤝 Owner replied manually to ${senderNumber} on ${tenant.name} — AI paused automatically`);
             }
@@ -422,22 +451,38 @@ router.post('/', async (req, res) => {
             return res.status(200).json({ status: 'ignored', reason: 'status broadcast' });
         }
 
-        // Extract message text and media
+        // Extract message text, media, AND QUOTED CONTEXT
         const message = data.message;
         const imageMessage = message?.imageMessage;
         const audioMessage = message?.audioMessage;
+        const videoMessage = message?.videoMessage;
+        const extendedTextMessage = message?.extendedTextMessage;
+
+        const contextInfo = extendedTextMessage?.contextInfo ||
+            imageMessage?.contextInfo ||
+            videoMessage?.contextInfo;
 
         let messageText =
             message?.conversation ||
-            message?.extendedTextMessage?.text ||
+            extendedTextMessage?.text ||
             imageMessage?.caption ||
-            message?.videoMessage?.caption ||
+            videoMessage?.caption ||
             null;
+
+        let quotedText = null;
+        if (contextInfo?.quotedMessage) {
+            const qm = contextInfo.quotedMessage;
+            quotedText = qm.conversation ||
+                qm.extendedTextMessage?.text ||
+                qm.imageMessage?.caption ||
+                qm.videoMessage?.caption ||
+                '[Media/Video/Image]';
+        }
 
         // ─── VOICE MESSAGE HANDLING: Transcribe audio to text ───
         if (audioMessage) {
-            console.log(`🎙️  Voice message detected (${data.key.id}), downloading...`);
-            const audioBase64 = await evolutionService.downloadMedia(tenant.instanceName, data.key.id);
+            console.log(`🎙️  Voice message detected (${messageId}), downloading...`);
+            const audioBase64 = await evolutionService.downloadMedia(tenant.instanceName, messageId);
             if (audioBase64) {
                 const mimeType = audioMessage.mimetype || 'audio/ogg';
                 console.log(`🎙️  Transcribing voice message (${mimeType})...`);
@@ -466,8 +511,8 @@ router.post('/', async (req, res) => {
         // ─── IMAGE HANDLING: Download image if message is a photo ───
         let imageData = null;
         if (imageMessage) {
-            console.log(`🖼️  Image message detected (${data.key.id}), downloading...`);
-            imageData = await evolutionService.downloadMedia(tenant.instanceName, data.key.id);
+            console.log(`🖼️  Image message detected (${messageId}), downloading...`);
+            imageData = await evolutionService.downloadMedia(tenant.instanceName, messageId);
             if (imageData) {
                 console.log('✅ Image downloaded successfully');
             }
@@ -500,114 +545,147 @@ router.post('/', async (req, res) => {
         const mediaTag = audioMessage ? 'VOICE' : (imageMessage ? 'IMAGE' : '');
         console.log(`\n📩 Message content [${mediaTag ? mediaTag + ' + ' : ''}${messageText || 'No text'}] from ${pushName} (${senderNumber}) to ${tenant.name}`);
 
-        // Add user message to conversation history (with DB persistence)
-        // If image/voice, we note it in text for context history
-        let processedText = messageText;
+        // Inject Quoted Context into AI memory
+        let processedText = messageText || '';
         if (audioMessage) {
             processedText = `[SENT A VOICE MESSAGE] ${messageText || ''}`;
         } else if (imageMessage) {
             processedText = `[SENT AN IMAGE] ${messageText || ''}`;
         }
+
+        // If the customer replied to a specific message, attach it here!
+        if (quotedText) {
+            processedText = `[Replying to previous message: "${quotedText.substring(0, 100)}..."]\nCustomer says: ${processedText}`;
+        }
+
+        // Save to DB immediately so the next webhook sees it
         await conversationService.addMessage(tenant.id, senderNumber, 'user', processedText, pushName);
 
-        // Get conversation history for context
-        const history = await conversationService.getHistory(tenant.id, senderNumber);
-
-        // Generate AI response 
-        console.log(`🤔 Generating AI response for ${tenant.name}...`);
-        const aiResponse = await aiService.generateResponse(tenant, history, imageData);
-
-        // Add AI response to conversation history
-        await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
-
-        // ─── AI TRIGGERS: Check if AI wants to send a payment QR or a lead summary ───
-
-        // Define regex for tags (case-insensitive, handles brackets or asterisks)
-        const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
-        const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
-        const reviewTagRegex = /[\*\[]+SCHEDULE_REVIEW[\*\]]+/i;
-
-        const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
-        const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
-        const shouldScheduleReview = reviewTagRegex.test(aiResponse);
-
-        // Remove tags from the response before sending to user
-        const cleanedResponse = aiResponse
-            .replace(new RegExp(qrTagRegex, 'gi'), '')
-            .replace(new RegExp(leadTagRegex, 'gi'), '')
-            .replace(new RegExp(reviewTagRegex, 'gi'), '')
-            .trim();
-
-        // Send reply back through Evolution API
-        // If customer sent a voice message AND TTS is available, reply with voice
-        let voiceSent = false;
-        if (audioMessage && ttsService.isAvailable()) {
-            try {
-                console.log('🔊 Generating voice reply via ElevenLabs...');
-                const audioBase64 = await ttsService.textToSpeech(cleanedResponse);
-                if (audioBase64) {
-                    await evolutionService.sendAudio(tenant.instanceName, senderNumber, audioBase64);
-                    voiceSent = true;
-                    console.log('🔊 Voice reply sent successfully');
-                }
-            } catch (ttsError) {
-                console.error('⚠️  Voice reply failed, falling back to text:', ttsError.message);
-            }
-        }
-
-        // Fallback to text if voice wasn't sent (or wasn't a voice message)
-        if (!voiceSent) {
-            await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
-        }
-
-        // If AI triggered a QR, generate and send it
-        if (shouldSendQr) {
-            console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
-
-            // Try to find a static pre-uploaded QR first (more reliable)
-            let qrBase64 = await paymentService.getStaticQr(tenant.id);
-
-            // Fallback to dynamic generation if no static image found
-            if (!qrBase64) {
-                console.log(`ℹ️  No static QR found for ${tenant.id}, generating dynamically...`);
-                qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
-            }
-
-            if (qrBase64) {
-                await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
-                    `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app (Google Pay, PhonePe, Paytm, etc.)`
-                );
-            }
-        }
-
-        // If AI triggered a Lead Summary, send context to the owner
-        if (shouldSendLeadSummary && tenant.ownerPhone) {
-            console.log(`📋 AI triggered Lead Summary for ${senderNumber} on ${tenant.name}`);
-
-            // Generate a summary query using AI or just send the recent history
-            // For speed, let's just send the last 5-6 messages between user and AI
-            const recentMsgs = history.slice(-6).map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`).join('\n\n');
-            const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
-
-            await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
-        }
-
-        // If AI triggered a Google Review request, schedule it
-        if (shouldScheduleReview) {
-            console.log(`⭐ AI triggered Google Review request for ${senderNumber} on ${tenant.name}`);
-            await reviewService.scheduleReview(tenant.id, pushName, senderNumber);
-        }
-
-        // ─── LEAD CAPTURE: Auto-capture lead from customer message ───
+        // Lead Capture (do this immediately too)
         const interest = leadService.extractInterest(messageText);
         leadService.captureLead(tenant.id, senderNumber, pushName, interest);
 
-        console.log(`✅ Conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Paused chats: ${takeoverService.getPausedCount()} | Products: ${productService.getCount(tenant.id)}`);
+        // ════════════════════════════════════════════════════════════════════
+        //  THE DEBOUNCER: Batching rapid-fire messages together
+        // ════════════════════════════════════════════════════════════════════
+        const chatKey = `${tenant.id}:${senderNumber}`;
 
-        return res.status(200).json({ status: 'processed' });
+        // Initialize state for this chat if it doesn't exist
+        if (!typingState.has(chatKey)) {
+            typingState.set(chatKey, { timer: null, imageData: null, audioMessage: null });
+        }
+
+        const state = typingState.get(chatKey);
+
+        // Preserve media if they sent an image/audio then immediately sent text
+        if (imageData) state.imageData = imageData;
+        if (audioMessage) state.audioMessage = audioMessage;
+
+        // Reset the timer!
+        if (state.timer) {
+            clearTimeout(state.timer);
+            console.log(`⏱️ Customer ${senderNumber} still typing... extending timer`);
+        }
+
+        // Acknowledge the webhook IMMEDIATELY so Evolution API doesn't retry
+        res.status(200).json({ status: 'queued_for_batching' });
+
+        // Start the countdown
+        state.timer = setTimeout(async () => {
+            // Grab the accumulated media before cleaning up
+            const finalImageData = state.imageData;
+            const finalAudioMsg = state.audioMessage;
+
+            // Clean up the map
+            typingState.delete(chatKey);
+
+            try {
+                // Get conversation history (this will now contain ALL messages they sent in the last 4 seconds!)
+                const history = await conversationService.getHistory(tenant.id, senderNumber);
+
+                // Generate AI response 
+                console.log(`🤔 Generating AI response for ${tenant.name}...`);
+                const aiResponse = await aiService.generateResponse(tenant, history, finalImageData);
+
+                // Add AI response to conversation history
+                await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
+
+                // ─── AI TRIGGERS ───
+                const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
+                const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
+                const reviewTagRegex = /[\*\[]+SCHEDULE_REVIEW[\*\]]+/i;
+
+                const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
+                const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
+                const shouldScheduleReview = reviewTagRegex.test(aiResponse);
+
+                // Remove tags from the response before sending
+                const cleanedResponse = aiResponse
+                    .replace(new RegExp(qrTagRegex, 'gi'), '')
+                    .replace(new RegExp(leadTagRegex, 'gi'), '')
+                    .replace(new RegExp(reviewTagRegex, 'gi'), '')
+                    .trim();
+
+                // Send reply back through Evolution API
+                let voiceSent = false;
+                if (finalAudioMsg && ttsService.isAvailable()) {
+                    try {
+                        console.log('🔊 Generating voice reply via Edge TTS...');
+                        const audioBase64 = await ttsService.textToSpeech(cleanedResponse);
+                        if (audioBase64) {
+                            await evolutionService.sendAudio(tenant.instanceName, senderNumber, audioBase64);
+                            voiceSent = true;
+                            console.log('🔊 Voice reply sent successfully');
+                        }
+                    } catch (ttsError) {
+                        console.error('⚠️  Voice reply failed, falling back to text:', ttsError.message);
+                    }
+                }
+
+                if (!voiceSent) {
+                    await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
+                }
+
+                // If AI triggered a QR
+                if (shouldSendQr) {
+                    console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
+                    let qrBase64 = await paymentService.getStaticQr(tenant.id);
+                    if (!qrBase64) {
+                        qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
+                    }
+                    if (qrBase64) {
+                        await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
+                            `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app.`
+                        );
+                    }
+                }
+
+                // If AI triggered a Lead Summary
+                if (shouldSendLeadSummary && tenant.ownerPhone) {
+                    console.log(`📋 AI triggered Lead Summary for ${senderNumber}`);
+                    const recentMsgs = history.slice(-6).map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`).join('\n\n');
+                    const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
+                    await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
+                }
+
+                // If AI triggered a Google Review request
+                if (shouldScheduleReview) {
+                    console.log(`⭐ AI triggered Google Review request for ${senderNumber}`);
+                    await reviewService.scheduleReview(tenant.id, pushName, senderNumber);
+                }
+
+                console.log(`✅ Batched conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Products: ${productService.getCount(tenant.id)}`);
+
+            } catch (err) {
+                console.error(`❌ Batch processing error for ${senderNumber}:`, err.message);
+            }
+        }, BATCH_DELAY_MS);
+
     } catch (error) {
         console.error('❌ Webhook processing error:', error.message);
-        return res.status(200).json({ status: 'error', message: error.message });
+        if (!res.headersSent) {
+            return res.status(200).json({ status: 'error', message: error.message });
+        }
     }
 });
 
