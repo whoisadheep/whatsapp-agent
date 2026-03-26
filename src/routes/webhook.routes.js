@@ -523,16 +523,19 @@ router.post('/', async (req, res) => {
         // ─── AI TRIGGERS: Check if AI wants to send a payment QR or a lead summary ───
 
         // Define regex for tags (case-insensitive, handles brackets or asterisks)
-        const qrTagRegex = /[\*\[]SEND_UPI_QR[\*\]]/i;
-        const leadTagRegex = /[\*\[]SEND_LEAD_SUMMARY[\*\]]/i;
+        const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
+        const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
+        const reviewTagRegex = /[\*\[]+SCHEDULE_REVIEW[\*\]]+/i;
 
         const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
         const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
+        const shouldScheduleReview = reviewTagRegex.test(aiResponse);
 
         // Remove tags from the response before sending to user
         const cleanedResponse = aiResponse
             .replace(new RegExp(qrTagRegex, 'gi'), '')
             .replace(new RegExp(leadTagRegex, 'gi'), '')
+            .replace(new RegExp(reviewTagRegex, 'gi'), '')
             .trim();
 
         // Send reply back through Evolution API
@@ -587,6 +590,12 @@ router.post('/', async (req, res) => {
             const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
 
             await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
+        }
+
+        // If AI triggered a Google Review request, schedule it
+        if (shouldScheduleReview) {
+            console.log(`⭐ AI triggered Google Review request for ${senderNumber} on ${tenant.name}`);
+            await reviewService.scheduleReview(tenant.id, pushName, senderNumber);
         }
 
         // ─── LEAD CAPTURE: Auto-capture lead from customer message ───
