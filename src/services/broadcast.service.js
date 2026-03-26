@@ -192,7 +192,7 @@ class BroadcastService {
      * @param {string} ownerPhone - where to send progress updates
      * @returns {number} jobId
      */
-    async start(tenant, audience, message, ownerPhone) {
+    async start(tenant, audience, message, ownerPhone, imageBase64 = null, imageMime = 'image/jpeg') {
         if (!db.isConnected()) throw new Error('Database not connected');
 
         // Only one active broadcast per tenant at a time
@@ -222,7 +222,7 @@ class BroadcastService {
         console.log(`📢 Broadcast #${jobId} started for ${tenant.name}: ${recipients.length} recipients (${audience})`);
 
         // Kick off async — don't await
-        this._runBroadcast(tenant, jobId, jobState, recipients, message, ownerPhone).catch(err => {
+        this._runBroadcast(tenant, jobId, jobState, recipients, message, ownerPhone, imageBase64, imageMime).catch(err => {
             console.error(`❌ Broadcast #${jobId} crashed:`, err.message);
             this.activeJobs.delete(tenant.id);
         });
@@ -230,7 +230,7 @@ class BroadcastService {
         return { jobId, total: recipients.length };
     }
 
-    async _runBroadcast(tenant, jobId, jobState, recipients, message, ownerPhone) {
+    async _runBroadcast(tenant, jobId, jobState, recipients, message, ownerPhone, imageBase64 = null, imageMime = 'image/jpeg') {
         const { stats } = jobState;
         const total = recipients.length;
         let lastProgressUpdate = 0;
@@ -253,7 +253,19 @@ class BroadcastService {
             try {
                 // Personalise message — replace {name} placeholder if present
                 const personalised = message.replace(/\{name\}/gi, recipient.push_name || 'Customer');
-                await evolutionService.sendText(tenant.instanceName, phone, personalised);
+
+                if (imageBase64) {
+                    // Send image with caption
+                    await evolutionService.sendImage(
+                        tenant.instanceName,
+                        phone,
+                        imageBase64,
+                        personalised,   // caption
+                        imageMime
+                    );
+                } else {
+                    await evolutionService.sendText(tenant.instanceName, phone, personalised);
+                }
                 stats.sent++;
             } catch (err) {
                 console.error(`❌ Broadcast failed for ${phone}:`, err.message);

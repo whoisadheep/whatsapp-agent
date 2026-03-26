@@ -81,18 +81,22 @@ class EvolutionService {
    * @param {string} base64Image Base64 encoded image (without data: prefix)
    * @param {string} caption Optional caption
    */
-  async sendImage(instanceName, number, base64Image, caption = '') {
+  async sendImage(instanceName, number, base64Image, caption = '', mimeType = 'image/jpeg') {
     if (!instanceName) throw new Error('instanceName is required');
     try {
+      // Derive a clean file name from mime type
+      const ext = mimeType.split('/')[1]?.split(';')[0] || 'jpg';
+      const fileName = `image.${ext}`;
+
       const response = await this.client.post(`/message/sendMedia/${instanceName}`, {
         number,
         mediatype: 'image',
-        mimetype: 'image/png',
+        mimetype: mimeType,
         caption,
         media: base64Image,
-        fileName: 'payment_qr.png',
+        fileName,
       });
-      console.log(`🖼️ Image sent to ${number} via ${instanceName}`);
+      console.log(`🖼️ Image (${mimeType}) sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
       console.error(`❌ Failed to send image to ${number} via ${instanceName}:`, error.response?.data || error.message);
@@ -156,7 +160,7 @@ class EvolutionService {
       const response = await this.client.post(`/chat/getBase64FromMediaMessage/${instanceName}`, {
         message: { key: { id: messageId } }
       });
-      
+
       // Evolution API returns base64 inside the response
       let base64 = response.data?.base64 || response.data;
 
@@ -195,7 +199,7 @@ class EvolutionService {
       const response = await this.client.get(`/instance/connect/${instanceName}`, {
         params: { number }
       });
-      
+
       // Evolution API returns { code: "ABC-DEF-GH" } or similar
       return response.data?.code || null;
     } catch (error) {
