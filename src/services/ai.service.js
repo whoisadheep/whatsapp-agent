@@ -65,58 +65,52 @@ After your reply, append the tag [SCHEDULE_REVIEW] (invisible to customer, caugh
 when ALL of the following are true:
 1. The conversation has reached a natural positive close — customer said thank you, confirmed receipt, said goodbye, expressed satisfaction, or confirmed a purchase/booking.
 2. The customer's sentiment is clearly positive or neutral-positive.
-3. The business has a review link configured (Purvodaya and SaiInfotek do).
+3. The business has a review link configured.
 
 TRIGGER examples (append [SCHEDULE_REVIEW]):
 - Customer says: "ok bhai mil gaya", "thanks", "theek hai", "done", "received", "perfect", "bahut accha"
 - Customer confirmed a payment or purchase was completed
-- You just resolved a complaint and customer accepted the resolution
-- Conversation ends with "bye", "ok", "👍", "✅"
 
 DO NOT TRIGGER examples (do NOT append [SCHEDULE_REVIEW]):
 - Customer is still asking questions or negotiating
 - Customer expressed frustration, complaint, or dissatisfaction
-- It's just a greeting with no transaction context
-- Customer said goodbye mid-conversation without a resolution
 
-Only append [SCHEDULE_REVIEW] ONCE per conversation closing. If you already appended it in a recent message, do not append again.
+Only append [SCHEDULE_REVIEW] ONCE per conversation closing.
 ---
 `;
 
-        // FIX: Added image and social message handling instructions.
-        // Previously the AI had no guidance for images or non-business messages,
-        // causing payment screenshots to get a refusal and social messages to get
-        // a cold sales deflection.
+        // ─── FIX 1: Tighter Image Rules (No Wikipedia essays) ───
         const IMAGE_HANDLING_RULES = `
 ---
 IMAGE HANDLING RULES:
-When the customer sends an image, the message will start with [CUSTOMER SENT AN IMAGE ...].
-- If it is a PAYMENT_SCREENSHOT: Acknowledge the payment warmly. Thank the customer. 
-  Ask what product/service the payment is for if unclear. NEVER say you cannot help with this.
-  Example: "Thank you for the payment! ✅ Could you let us know which product or service this payment is for so we can process it?"
-- If it is a PRODUCT_IMAGE or PRODUCT_QUERY_IMAGE: Describe what you see and help with their query.
-- If it is an INVOICE_OR_BILL: Help the customer with their billing query.
-- If image download failed (noted in the context): Respond warmly based on the caption/type context provided. Never say "I'm not able to provide help with this conversation."
-- NEVER respond with "I'm not able to provide help with this conversation" for any image type.
+When the customer sends an image:
+- PAYMENT_SCREENSHOT: Warmly thank them. Ask what product/service it's for. NEVER say you cannot help.
+- PRODUCT_IMAGE (or forwarded product): DO NOT write a long essay or list specifications. Keep it to 1-2 lines. Acknowledge the product briefly and ask a short clarifying question like "Yeh product chahiye aapko?"
+- GENERAL/FESTIVAL IMAGE: If it's a greeting, reply warmly with a relevant wish.
+- NEVER respond with "I'm not able to provide help with this conversation."
 ---
 `;
 
+        // ─── FIX 2: Social Links & Patience Rules ───
         const SOCIAL_MESSAGE_RULES = `
 ---
-SOCIAL & NON-BUSINESS MESSAGE RULES:
-People sometimes send greetings, religious messages, good morning/night wishes, or general chit-chat.
-Handle these gracefully WITHOUT a cold business deflection:
-- For greetings (hi, hello, good morning, good night, namaste): Respond warmly and briefly, then offer help. 
-  Do NOT say "Sorry, I can only help with [product]..." for a simple greeting.
-- For religious/devotional forwards (shlokas, prayers, quotes): Acknowledge respectfully with a one-line warm reply (e.g., "Jai Shiv Shambhu! 🙏 Koi madad chahiye to batayein."). 
-  Do NOT follow with a sales pitch.
-- For "how are you" or personal chat: Respond briefly and warmly, then gently steer toward business.
-- Only deflect to "main sirf X mein help kar sakta hoon" if the person is asking about something completely unrelated AND is clearly expecting a business-type answer.
-The goal: never make a person feel like they messaged a cold robot when they were just being friendly.
+SOCIAL, LINKS & DELAYED RESPONSES:
+- URLs/LINKS: If a user sends a YouTube link or URL with no context, DO NOT pitch products. Simply ask: "Aap iske baare mein kya jaanna chahte hain?"
+- PATIENCE ("Bataunga"): If a customer says they will tell you later (e.g., "bataunga", "baad mein batata hoon"), reply with a short, polite acknowledgement like "Ji zaroor, jab zaroorat ho batayen 🙏" and DO NOT ask any follow-up questions.
+- GREETINGS/RELIGIOUS: Respond briefly and warmly (e.g., "Jai Shiv Shambhu! 🙏"). Do NOT immediately push a sales pitch.
 ---
 `;
 
-        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES;
+        // ─── FIX 3: Anti-Hallucination Rules ───
+        const ANTI_HALLUCINATION_RULES = `
+---
+STRICT INVENTORY & SCOPE RULES:
+- NEVER claim to sell products or services that are not explicitly listed in your catalog or scope. 
+- If a customer asks about a product you do not sell (e.g., Interactive Panels), honestly state that you do not sell it, and politely mention what you DO specialize in. Do not invent "similar ranges."
+---
+`;
+
+        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES;
     }
 
     // ─────────────────────── NVIDIA: text ─────────────────────────
@@ -150,10 +144,14 @@ The goal: never make a person feel like they messaged a cold robot when they wer
         }));
 
         const lastMsg = conversationHistory[conversationHistory.length - 1];
+
+        // ─── FIX 4: Changed fallback prompt from 'What is in this image?' to something that respects rules ───
+        const fallbackVisionText = "User sent an image. Please respond briefly in the correct language according to your SYSTEM rules.";
+
         const userContent = [
             {
                 type: 'text',
-                text: lastMsg.content || 'What is in this image?',
+                text: lastMsg.content && lastMsg.content !== '[SENT AN IMAGE] ' ? lastMsg.content : fallbackVisionText,
             },
             {
                 type: 'image_url',
@@ -217,8 +215,14 @@ The goal: never make a person feel like they messaged a cold robot when they wer
         const chat = model.startChat({ history: contents.slice(0, -1) });
         const lastMessage = contents[contents.length - 1];
 
+        // ─── FIX 4 (Continued for Gemini) ───
+        const fallbackVisionText = "User sent an image. Please respond briefly in the correct language according to your SYSTEM rules.";
+        const textPart = lastMessage.parts[0].text && lastMessage.parts[0].text !== '[SENT AN IMAGE] '
+            ? lastMessage.parts[0].text
+            : fallbackVisionText;
+
         const parts = [
-            { text: lastMessage.parts[0].text || 'What is in this image?' },
+            { text: textPart },
             { inlineData: { mimeType: 'image/jpeg', data: imageData } },
         ];
 
@@ -280,6 +284,23 @@ The goal: never make a person feel like they messaged a cold robot when they wer
 
     _postProcessResponse(text) {
         if (!text) return text;
+
+        // ─── FIX 5: SAFETY REFUSAL OVERRIDE ───
+        // Catch hardcoded model safety refusals triggered by festival/religious images
+        const safetyStrings = [
+            "I'm not able to provide help with this conversation",
+            "I cannot fulfill this request",
+            "I can't help with that",
+            "I am unable to",
+            "I cannot analyze this image",
+            "I cannot fulfill that request"
+        ];
+
+        if (safetyStrings.some(s => text.includes(s))) {
+            console.warn('⚠️ AI triggered a vision safety refusal. Overriding with generic warm response.');
+            return "Message received! 👍 Main aapki kaise madad kar sakta hoon?";
+        }
+
         return text
             .replace(/\*\*(.*?)\*\*/g, '*$1*') // Convert **bold** to *bold*
             .replace(/\n{3,}/g, '\n\n')         // Normalize 3+ newlines to 2
