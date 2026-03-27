@@ -28,6 +28,58 @@ const MAX_PROCESSED_IDS = 200;
 const typingState = new Map();
 const BATCH_DELAY_MS = 4000; // Wait 4 seconds after their last message before replying
 
+// ─── IMAGE CONTEXT HELPERS ───────────────────────────────────────────────────
+// Classify image type from caption keywords
+function classifyImageContext(caption) {
+    if (!caption) return null;
+    const text = caption.toLowerCase();
+    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|bank|transfer|₹|\d{4,}/))
+        return 'PAYMENT_SCREENSHOT';
+    if (text.match(/invoice|bill|receipt|order/))
+        return 'INVOICE_OR_BILL';
+    if (text.match(/cctv|camera|biometric|device|model|panel|product|item/))
+        return 'PRODUCT_IMAGE';
+    if (text.match(/location|map|address|site/))
+        return 'LOCATION_IMAGE';
+    if (text.match(/mahakal|shiv|durga|ganesh|hanuman|aarti|mandir|festival|diwali|holi|eid|navratri|puja|prasad|🙏|🪔|🕉️/))
+        return 'FESTIVAL_IMAGE';
+    return null;
+}
+
+// Build rich context string so AI always has meaningful guidance
+function buildImageContextText(imageDownloaded, caption, imageType) {
+    const type = imageType || classifyImageContext(caption) || 'GENERAL_IMAGE';
+    let context = '[CUSTOMER SENT AN IMAGE';
+    if (caption) context += ` with caption: "${caption}"`;
+
+    switch (type) {
+        case 'PAYMENT_SCREENSHOT':
+            context += ' — This is a UPI/payment screenshot. Warmly acknowledge the payment and ask which product/service it is for. NEVER refuse to help.';
+            break;
+        case 'INVOICE_OR_BILL':
+            context += ' — This is an invoice or bill. Help with the billing query.';
+            break;
+        case 'PRODUCT_IMAGE':
+            context += ' — Customer sent a product image. Ask a SHORT clarifying question (e.g., "Yeh product chahiye aapko? Price batata hoon."). Do NOT write a long description.';
+            break;
+        case 'FESTIVAL_IMAGE':
+            context += ' — Customer sent a festival or religious greeting image. Reply with a warm, brief festival wish in Hinglish (e.g., "Jai Shiv Shambhu! 🙏 Koi madad chahiye to batayen."). Do NOT pitch products.';
+            break;
+        case 'LOCATION_IMAGE':
+            context += ' — Customer sent a location/map image.';
+            break;
+        default:
+            context += ' — This is likely a social/greeting/forwarded image. Reply warmly and briefly. Do NOT ask "what product do you want?" or treat it as a business inquiry. Simply say something friendly like "Message mila! Koi madad chahiye to batayen 😊"';
+    }
+
+    if (!imageDownloaded) {
+        context += ' Image could not be loaded — respond based on caption context only.';
+    }
+
+    context += ']';
+    return context;
+}
+
 // Process incoming webhook events from Evolution API
 router.post('/', async (req, res) => {
     try {
@@ -550,7 +602,14 @@ router.post('/', async (req, res) => {
         if (audioMessage) {
             processedText = `[SENT A VOICE MESSAGE] ${messageText || ''}`;
         } else if (imageMessage) {
-            processedText = `[SENT AN IMAGE] ${messageText || ''}`;
+            // Use rich semantic context instead of bare "[SENT AN IMAGE]"
+            // so the AI knows HOW to respond (festival greeting vs payment vs product)
+            const imgCaption = imageMessage.caption || '';
+            const imgType = classifyImageContext(imgCaption);
+            processedText = buildImageContextText(!!imageData, imgCaption, imgType);
+            if (messageText && messageText !== imgCaption) {
+                processedText += ` User also wrote: "${messageText}"`;
+            }
         }
 
         // If the customer replied to a specific message, attach it here!
@@ -564,6 +623,46 @@ router.post('/', async (req, res) => {
         // Lead Capture (do this immediately too)
         const interest = leadService.extractInterest(messageText);
         leadService.captureLead(tenant.id, senderNumber, pushName, interest);
+
+        // ─── DEALER PAYMENT INTERCEPT ─────────────────────────────────────────
+        // Hardcoded catch for SaiInfotek dealer "pay me" requests BEFORE the AI runs.
+        // The AI cannot reliably distinguish "dealer wanting payment" from "customer paying us".
+        // We detect it in code, send the safe hardcoded reply, and alert the owner.
+        if (messageText && tenant.id === 'sai_infotek') {
+            const dealerTriggers = [
+                'payment transfer kar', 'mera payment', 'mujhe paise', 'ledger bhejo',
+                'outstanding clear', 'baki payment', 'mera amount', 'paisa bhejo',
+                'transfer kar de', 'payment kab', 'mera balance', 'settlement karo',
+                'mera paisa', 'payment do', 'paise do', 'payment chahiye',
+            ];
+            const msgLower = messageText.toLowerCase();
+            const isDealerRequest = dealerTriggers.some(t => msgLower.includes(t));
+
+            if (isDealerRequest) {
+                console.log(`🏪 Dealer payment request from ${senderNumber} on ${tenant.name} — bypassing AI`);
+
+                const dealerReply = 'Namaste! 🙏 Main Kumud sir ka AI assistant hoon. Aapka payment/ledger message main sir ko abhi forward kar raha hoon. Sir aapse jaldi contact karenge. Dhanyawad!';
+                await evolutionService.sendText(tenant.instanceName, senderNumber, dealerReply);
+                await conversationService.addMessage(tenant.id, senderNumber, 'assistant', dealerReply);
+
+                // Immediately alert the owner
+                if (tenant.ownerPhone) {
+                    const ownerAlert =
+                        `⚠️ *Dealer Payment Request*
+
+` +
+                        `📞 From: ${pushName} (${senderNumber})
+` +
+                        `💬 "${messageText.slice(0, 200)}"
+
+` +
+                        `_AI ne politely reply kar diya. Aap directly contact karen._`;
+                    evolutionService.sendText(tenant.instanceName, tenant.ownerPhone.replace(/\D/g, ''), ownerAlert).catch(() => { });
+                }
+
+                return res.status(200).json({ status: 'dealer_intercepted' });
+            }
+        }
 
         // ════════════════════════════════════════════════════════════════════
         //  THE DEBOUNCER: Batching rapid-fire messages together
