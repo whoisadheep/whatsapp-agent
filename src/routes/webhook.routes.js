@@ -702,9 +702,21 @@ router.post('/', async (req, res) => {
                 // Get conversation history (this will now contain ALL messages they sent in the last 4 seconds!)
                 const history = await conversationService.getHistory(tenant.id, senderNumber);
 
+                // Detect Intent
+                const lastMessageText = history.length > 0 ? history[history.length - 1].content : '';
+                console.log(`🔍 Detecting intent for: "${lastMessageText.slice(0, 50)}..."`);
+                const intent = await aiService.detectIntent(tenant, lastMessageText);
+                console.log(`🎯 Detected intent: ${intent}`);
+
+                // Choose Response Strategy
+                if (intent === aiService.intents.PERSONAL_UNRELATED) {
+                    console.log(`⏭️  Intent is PERSONAL_UNRELATED, skipping AI reply.`);
+                    return;
+                }
+
                 // Generate AI response 
-                console.log(`🤔 Generating AI response for ${tenant.name}...`);
-                const aiResponse = await aiService.generateResponse(tenant, history, finalImageData);
+                console.log(`🤔 Generating AI response for ${tenant.name} (${intent})...`);
+                const aiResponse = await aiService.generateResponse(tenant, history, finalImageData, intent);
 
                 // Add AI response to conversation history
                 await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);

@@ -1,5 +1,5 @@
 const OpenAI = require('openai');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 const productService = require('./product.service');
 
 class AIService {
@@ -34,15 +34,33 @@ class AIService {
         if (!this.nvidiaClient && !this.geminiAI) {
             console.error('❌ No AI provider configured! AI responses will not work.');
         }
+
+        // ─── Intent Categories ───
+        this.intents = {
+            GREETING: 'GREETING',           // "Hi", "Hello", "Good morning", festival wishes
+            CASUAL_REPLY: 'CASUAL_REPLY',   // "Ok", "Thanks", "Theek hai", "Same to you"
+            BUSINESS_INQUIRY: 'BUSINESS_INQUIRY', // Price, service, product, order
+            DEALER_DISCUSSION: 'DEALER_DISCUSSION', // Dealer asking for payment/ledger
+            PERSONAL_UNRELATED: 'PERSONAL_UNRELATED' // Family talk, random things
+        };
     }
 
     // ─────────────────────────── helpers ───────────────────────────
 
-    async buildSystemPrompt(tenant) {
+    async buildSystemPrompt(tenant, intent = null) {
         if (!tenant || !tenant.systemPrompt) {
             return 'You are a helpful business assistant.';
         }
-        const catalogText = await productService.getCatalogText(tenant.id);
+        const catalogText = (intent === this.intents.BUSINESS_INQUIRY) ? await productService.getCatalogText(tenant.id) : '';
+
+        const INTENT_GUIDANCE = intent ? `
+---
+DETECTED INTENT: ${intent}
+${intent === this.intents.GREETING || intent === this.intents.CASUAL_REPLY ? 
+'CRITICAL: The user is sending a greeting or casual acknowledging. DO NOT introduce yourself as an AI assistant. DO NOT provide business details. Reply briefly and warmly (e.g., "Dhanyavaad 🙏" or "Jai Shri Ram!").' : 
+'The user is inquiring about business. You may introduce yourself as the AI assistant if appropriate.'}
+---
+` : '';
 
         const CHANNEL_FORMATTING_RULES = `
 ---
@@ -110,7 +128,46 @@ STRICT INVENTORY & SCOPE RULES:
 ---
 `;
 
-        return tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES;
+        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES;
+    }
+
+    /**
+     * Detects the intent of an incoming message.
+     * @param {Object} tenant The tenant object
+     * @param {string} message Text of the message
+     * @returns {Promise<string>} One of this.intents
+     */
+    async detectIntent(tenant, message) {
+        if (!message) return this.intents.BUSINESS_INQUIRY;
+
+        const intentPrompt = `
+You are an intent classifier for a WhatsApp business agent.
+Categorize the following incoming message into EXACTLY ONE of these categories:
+- GREETING: "Hi", "Hello", "Good morning", festival wishes (Diwali, Holi, etc.), religious greetings (Jai Shri Ram, etc.)
+- CASUAL_REPLY: "Ok", "Thanks", "Theek hai", "Same to you", "Got it", "Theek"
+- BUSINESS_INQUIRY: Questions about products, pricing, services, availability, orders, location, or business hours.
+- DEALER_DISCUSSION: Conversations about payments, ledgers, outstanding amounts, or dealer-to-business transactions.
+- PERSONAL_UNRELATED: Anything else that is strictly personal, family-related, or completely unrelated to the business.
+
+Message: "${message}"
+
+Respond with ONLY the category name.
+`;
+
+        try {
+            const result = await this._generateWithProviders(intentPrompt, [], false, null);
+            const detected = (result || '').trim().toUpperCase();
+
+            if (detected.includes('GREETING')) return this.intents.GREETING;
+            if (detected.includes('CASUAL_REPLY')) return this.intents.CASUAL_REPLY;
+            if (detected.includes('DEALER_DISCUSSION')) return this.intents.DEALER_DISCUSSION;
+            if (detected.includes('PERSONAL_UNRELATED')) return this.intents.PERSONAL_UNRELATED;
+            
+            return this.intents.BUSINESS_INQUIRY; // Default
+        } catch (err) {
+            console.error('❌ Intent detection failed:', err.message);
+            return this.intents.BUSINESS_INQUIRY;
+        }
     }
 
     // ─────────────────────── NVIDIA: text ─────────────────────────
@@ -186,6 +243,12 @@ STRICT INVENTORY & SCOPE RULES:
         const model = this.geminiAI.getGenerativeModel({
             model: 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
+            safetySettings: [
+                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+            ]
         });
 
         const contents = conversationHistory.map((msg) => ({
@@ -205,6 +268,12 @@ STRICT INVENTORY & SCOPE RULES:
         const model = this.geminiAI.getGenerativeModel({
             model: 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
+            safetySettings: [
+                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+            ]
         });
 
         const contents = conversationHistory.map((msg) => ({
@@ -293,12 +362,15 @@ STRICT INVENTORY & SCOPE RULES:
             "I can't help with that",
             "I am unable to",
             "I cannot analyze this image",
-            "I cannot fulfill that request"
+            "I cannot fulfill that request",
+            "illegal or harmful activities",
+            "non-consensual or exploitative",
+            "towards children"
         ];
 
         if (safetyStrings.some(s => text.includes(s))) {
-            console.warn('⚠️ AI triggered a vision safety refusal. Overriding with generic warm response.');
-            return "Message received! 👍 Main aapki kaise madad kar sakta hoon?";
+            console.warn('⚠️ AI triggered a vision safety refusal.');
+            return "__SAFETY_REFUSAL__";
         }
 
         return text
@@ -309,17 +381,42 @@ STRICT INVENTORY & SCOPE RULES:
 
     // ═══════════════════ main entry point ═════════════════════════
 
-    async generateResponse(tenant, conversationHistory, imageData = null) {
+    async generateResponse(tenant, conversationHistory, imageData = null, intent = null) {
         if (!this.nvidiaClient && !this.geminiAI) {
             return "I'm sorry, the AI service is not configured yet. Please contact the administrator.";
         }
 
         const hasImage = Boolean(imageData);
-        const systemPrompt = await this.buildSystemPrompt(tenant);
+        const systemPrompt = await this.buildSystemPrompt(tenant, intent);
         const response = await this._generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData);
 
         if (response) {
-            return this._postProcessResponse(response);
+            const processed = this._postProcessResponse(response);
+
+            if (processed === "__SAFETY_REFUSAL__") {
+                if (hasImage) {
+                    console.log("🔄 Safety refusal on vision. Checking for text context...");
+                    
+                    const lastMsg = conversationHistory[conversationHistory.length - 1];
+                    const hasText = lastMsg && lastMsg.content && lastMsg.content !== '[SENT AN IMAGE] ' && lastMsg.content.trim().length > 3;
+
+                    if (hasText) {
+                        console.log(`📡 Retrying with text context: "${lastMsg.content}"`);
+                        const textOnlyResponse = await this._generateWithProviders(systemPrompt, conversationHistory, false, null);
+                        if (textOnlyResponse) {
+                            return this._postProcessResponse(textOnlyResponse);
+                        }
+                    }
+
+                    // No text or text-only failed
+                    return "Aapne image toh bhej di, par main use theek se dekh nahi pa raha hoon. 🙏 Kya aap bata sakte hain ki aap is product ki price, availability ya kisi aur cheez ke baare mein jaanna chahte hain?";
+                }
+                
+                // If it was just text and still refused (rare)
+                return "Message received! 👍 Main aapki kaise madad kar sakta hoon?";
+            }
+
+            return processed;
         }
 
         return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
