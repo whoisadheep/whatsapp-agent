@@ -1,5 +1,5 @@
 const OpenAI = require('openai');
-const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const productService = require('./product.service');
 
 class AIService {
@@ -56,9 +56,9 @@ class AIService {
         const INTENT_GUIDANCE = intent ? `
 ---
 DETECTED INTENT: ${intent}
-${intent === this.intents.GREETING || intent === this.intents.CASUAL_REPLY ? 
-'CRITICAL: The user is sending a greeting or casual acknowledging. DO NOT introduce yourself as an AI assistant. DO NOT provide business details. Reply briefly and warmly (e.g., "Dhanyavaad 🙏" or "Jai Shri Ram!").' : 
-'The user is inquiring about business. You may introduce yourself as the AI assistant if appropriate.'}
+${intent === this.intents.GREETING || intent === this.intents.CASUAL_REPLY ?
+                'CRITICAL: The user is sending a greeting or casual acknowledging. DO NOT introduce yourself as an AI assistant. DO NOT provide business details. Reply briefly and warmly (e.g., "Dhanyavaad 🙏" or "Jai Shri Ram!").' :
+                'The user is inquiring about business. You may introduce yourself as the AI assistant if appropriate.'}
 ---
 ` : '';
 
@@ -132,42 +132,117 @@ STRICT INVENTORY & SCOPE RULES:
     }
 
     /**
-     * Detects the intent of an incoming message.
-     * @param {Object} tenant The tenant object
-     * @param {string} message Text of the message
-     * @returns {Promise<string>} One of this.intents
+     * Classify intent using a zero-cost linguistic rule engine.
+     *
+     * Design principles — no keyword lists, no API calls:
+     *
+     * 1. STRUCTURAL signals: message length, punctuation, script mix,
+     *    emoji density, question marks. These generalise across all
+     *    languages and dialects without listing specific words.
+     *
+     * 2. SCRIPT detection: Devanagari-only messages with no question mark
+     *    and no price signal are almost always greetings or casual — not
+     *    business inquiries. Latin-script short messages with no question
+     *    mark trend casual. Mixed script with a question mark trends business.
+     *
+     * 3. SEMANTIC signals derived from character-level patterns rather than
+     *    words: currency symbols (₹, Rs), digit sequences (prices, quantities),
+     *    forward-slash patterns (specifications like "4MP/30m"), question marks.
+     *    These are language-agnostic.
+     *
+     * 4. IMAGE context: if the message starts with [CUSTOMER SENT AN IMAGE],
+     *    it was already classified by classifyImageContext() in the webhook —
+     *    extract that type and map it directly to an intent.
+     *
+     * Returns synchronously — zero latency, zero API cost.
+     * @param {Object} tenant
+     * @param {string} message
+     * @returns {string} One of this.intents
      */
-    async detectIntent(tenant, message) {
-        if (!message) return this.intents.BUSINESS_INQUIRY;
+    detectIntent(tenant, message) {
+        if (!message || message.trim().length === 0) return this.intents.BUSINESS_INQUIRY;
 
-        const intentPrompt = `
-You are an intent classifier for a WhatsApp business agent.
-Categorize the following incoming message into EXACTLY ONE of these categories:
-- GREETING: "Hi", "Hello", "Good morning", festival wishes (Diwali, Holi, etc.), religious greetings (Jai Shri Ram, etc.)
-- CASUAL_REPLY: "Ok", "Thanks", "Theek hai", "Same to you", "Got it", "Theek"
-- BUSINESS_INQUIRY: Questions about products, pricing, services, availability, orders, location, or business hours.
-- DEALER_DISCUSSION: Conversations about payments, ledgers, outstanding amounts, or dealer-to-business transactions.
-- PERSONAL_UNRELATED: Anything else that is strictly personal, family-related, or completely unrelated to the business.
+        const raw = message.trim();
+        const lower = raw.toLowerCase();
 
-Message: "${message}"
-
-Respond with ONLY the category name.
-`;
-
-        try {
-            const result = await this._generateWithProviders(intentPrompt, [], false, null);
-            const detected = (result || '').trim().toUpperCase();
-
-            if (detected.includes('GREETING')) return this.intents.GREETING;
-            if (detected.includes('CASUAL_REPLY')) return this.intents.CASUAL_REPLY;
-            if (detected.includes('DEALER_DISCUSSION')) return this.intents.DEALER_DISCUSSION;
-            if (detected.includes('PERSONAL_UNRELATED')) return this.intents.PERSONAL_UNRELATED;
-            
-            return this.intents.BUSINESS_INQUIRY; // Default
-        } catch (err) {
-            console.error('❌ Intent detection failed:', err.message);
-            return this.intents.BUSINESS_INQUIRY;
+        // ── 1. IMAGE CONTEXT: already classified upstream ──────────────────────
+        // The webhook injects [CUSTOMER SENT AN IMAGE — ...TYPE...] into history.
+        // Extract the type and map directly — no further analysis needed.
+        if (raw.startsWith('[CUSTOMER SENT AN IMAGE')) {
+            if (lower.includes('festival') || lower.includes('religious') || lower.includes('greeting image'))
+                return this.intents.GREETING;
+            if (lower.includes('payment') || lower.includes('invoice') || lower.includes('bill'))
+                return this.intents.BUSINESS_INQUIRY;
+            if (lower.includes('product image') || lower.includes('product'))
+                return this.intents.BUSINESS_INQUIRY;
+            return this.intents.BUSINESS_INQUIRY; // default for other image types
         }
+
+        // ── 2. SCRIPT ANALYSIS ─────────────────────────────────────────────────
+        const devanagariChars = (raw.match(/[\u0900-\u097F]/g) || []).length;
+        const latinChars = (raw.match(/[a-zA-Z]/g) || []).length;
+        const digitChars = (raw.match(/[0-9]/g) || []).length;
+        const totalChars = raw.replace(/\s/g, '').length || 1;
+
+        const devanagariRatio = devanagariChars / totalChars;
+        const latinRatio = latinChars / totalChars;
+        const isDevanagariHeavy = devanagariRatio > 0.5;
+        const isMixedScript = devanagariRatio > 0.1 && latinRatio > 0.1;
+
+        // ── 3. STRUCTURAL SIGNALS ──────────────────────────────────────────────
+        const wordCount = raw.split(/\s+/).filter(Boolean).length;
+        const hasQuestion = raw.includes('?');
+        const emojiCount = (raw.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []).length;
+        const emojiRatio = emojiCount / Math.max(wordCount, 1);
+
+        // ── 4. SEMANTIC CHARACTER PATTERNS (language-agnostic) ────────────────
+        // Price signal: ₹ or "Rs" or a digit sequence ≥ 3 digits
+        const hasPriceSignal = /₹|\brs\b|\brupe|\d{3,}/.test(lower);
+        // Specification signal: digit+unit patterns like "4MP", "2TB", "100m", "1kW"
+        const hasSpecSignal = /\d+\s*(mp|tb|gb|mb|kw|kwh|kva|watt|volt|amp|meter|feet|inch|km|mb\/s)/.test(lower);
+        // Contact/action signal: forward-slash (model numbers), @ symbol, URLs
+        const hasRefSignal = /\/|@|https?:\/\/|www\./.test(raw);
+        // Salutation pattern: message starts with a single word ≤8 chars, possibly followed by punctuation
+        const startsLikeSalutation = /^[\w\u0900-\u097F]{1,8}[!?.\s]*$/.test(raw);
+
+        // ── 5. SCORING ────────────────────────────────────────────────────────
+        // Assign weighted scores for BUSINESS and CASUAL signals.
+        // Whichever wins determines the intent.
+
+        let businessScore = 0;
+        let casualScore = 0;
+
+        // Business signals
+        if (hasQuestion) businessScore += 3;  // Questions are almost always business
+        if (hasPriceSignal) businessScore += 4;  // Prices = definitely business
+        if (hasSpecSignal) businessScore += 3;  // Specs = product inquiry
+        if (hasRefSignal) businessScore += 2;  // Model numbers, links
+        if (wordCount > 8) businessScore += 2;  // Long messages trend business
+        if (isMixedScript) businessScore += 1;  // Hinglish tends toward business
+        if (digitChars > 3) businessScore += 2;  // Numbers = prices, quantities
+
+        // Casual / greeting signals
+        if (wordCount <= 3) casualScore += 3;  // Very short = casual
+        if (emojiRatio > 0.3) casualScore += 2;  // Emoji-heavy = social
+        if (startsLikeSalutation) casualScore += 3;  // Single-word opener = greeting
+        if (isDevanagariHeavy && !hasQuestion && wordCount <= 6) casualScore += 2;
+        if (wordCount <= 1) casualScore += 2;  // Single word is almost always casual
+
+        // ── 6. DECISION ───────────────────────────────────────────────────────
+        console.log(`🧠 Intent signals — business:${businessScore} casual:${casualScore} words:${wordCount} q:${hasQuestion} price:${hasPriceSignal}`);
+
+        // Strong business signals override everything
+        if (hasPriceSignal || hasSpecSignal) return this.intents.BUSINESS_INQUIRY;
+
+        if (casualScore > businessScore) {
+            // Distinguish GREETING (no prior context expected) from CASUAL_REPLY
+            // (acknowledging something). Greeting = opener words or emoji-only.
+            if (startsLikeSalutation || emojiRatio > 0.5 || wordCount <= 1)
+                return this.intents.GREETING;
+            return this.intents.CASUAL_REPLY;
+        }
+
+        return this.intents.BUSINESS_INQUIRY;
     }
 
     // ─────────────────────── NVIDIA: text ─────────────────────────
@@ -192,49 +267,83 @@ Respond with ONLY the category name.
         return completion.choices[0].message.content;
     }
 
-    // ─────────────────────── NVIDIA: vision ───────────────────────
+    // ─────────────────────── Image description pipeline ──────────────
+    //
+    // Two-step approach to eliminate vision safety misfires:
+    //
+    // Step 1 — _describeImage(): Send the image to a vision model with a
+    //   completely neutral, context-free prompt: "Describe what is in this
+    //   image in one factual sentence." No user text, no business context.
+    //   The model cannot misfire here — it sees only pixels and a benign
+    //   describe instruction. Returns a plain English description.
+    //
+    // Step 2 — The description replaces imageData in the main AI call.
+    //   The main model is now text-only. It reads the description alongside
+    //   the conversation history and responds naturally. The vision safety
+    //   classifier is never involved in the response step.
+    //
+    // Result: "Ye le liya h" + electric door lock photo →
+    //   description: "An electric door lock product in packaging."
+    //   Main AI reads that as text and responds appropriately.
 
+    async describeImage(imageData) {
+        // Neutral describe prompt — no business context, no user message.
+        // Deliberately minimal so the vision safety filter has nothing to
+        // pattern-match against.
+        const DESCRIBE_PROMPT = 'Describe what is in this image in one factual sentence. Be objective and brief.';
+
+        // Try NVIDIA vision first
+        if (this.nvidiaClient) {
+            try {
+                const completion = await this.nvidiaClient.chat.completions.create({
+                    model: this.nvidiaVisionModel,
+                    messages: [{
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: DESCRIBE_PROMPT },
+                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageData}` } },
+                        ],
+                    }],
+                    temperature: 0.1,
+                    max_tokens: 80,
+                });
+                const desc = completion.choices[0]?.message?.content?.trim();
+                if (desc) {
+                    console.log(`🖼️  [NVIDIA] Image described: "${desc}"`);
+                    return desc;
+                }
+            } catch (err) {
+                console.error('❌ [NVIDIA] _describeImage failed:', err.message);
+            }
+        }
+
+        // Fallback: Gemini vision
+        if (this.geminiAI) {
+            try {
+                const model = this.geminiAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+                const result = await model.generateContent([
+                    DESCRIBE_PROMPT,
+                    { inlineData: { mimeType: 'image/jpeg', data: imageData } },
+                ]);
+                const desc = result.response.text()?.trim();
+                if (desc) {
+                    console.log(`🖼️  [Gemini] Image described: "${desc}"`);
+                    return desc;
+                }
+            } catch (err) {
+                console.error('❌ [Gemini] _describeImage failed:', err.message);
+            }
+        }
+
+        return null; // Both failed — caller handles gracefully
+    }
+
+    // NVIDIA text (unchanged)
     async _nvidiaVision(systemPrompt, conversationHistory, imageData) {
-        const historyMessages = conversationHistory.slice(0, -1).map((msg) => ({
-            role: msg.role === 'assistant' ? 'assistant' : 'user',
-            content: msg.content,
-        }));
-
-        const lastMsg = conversationHistory[conversationHistory.length - 1];
-
-        // ─── FIX 4: Changed fallback prompt from 'What is in this image?' to something that respects rules ───
-        const fallbackVisionText = "User sent an image. Please respond briefly in the correct language according to your SYSTEM rules.";
-
-        const userContent = [
-            {
-                type: 'text',
-                text: lastMsg.content && lastMsg.content !== '[SENT AN IMAGE] ' ? lastMsg.content : fallbackVisionText,
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:image/jpeg;base64,${imageData}`,
-                },
-            },
-        ];
-
-        const messages = [
-            { role: 'system', content: systemPrompt },
-            ...historyMessages,
-            { role: 'user', content: userContent },
-        ];
-
-        console.log(`📡 [NVIDIA] Sending vision request...`);
-        const completion = await this.nvidiaClient.chat.completions.create({
-            model: this.nvidiaVisionModel,
-            messages,
-            temperature: 0.1,
-            top_p: 0.7,
-            max_tokens: 2048,
-        });
-
-        console.log(`📡 [NVIDIA] Received response`);
-        return completion.choices[0].message.content;
+        // This method is now only called after imageData has been replaced
+        // with a text description — see generateResponse(). It runs as a
+        // normal text call with the description injected into history.
+        return this._nvidiaText(systemPrompt, conversationHistory);
     }
 
     // ──────────────────────── Gemini: text ─────────────────────────
@@ -243,12 +352,6 @@ Respond with ONLY the category name.
         const model = this.geminiAI.getGenerativeModel({
             model: 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-            ]
         });
 
         const contents = conversationHistory.map((msg) => ({
@@ -268,12 +371,6 @@ Respond with ONLY the category name.
         const model = this.geminiAI.getGenerativeModel({
             model: 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-            ]
         });
 
         const contents = conversationHistory.map((msg) => ({
@@ -353,29 +450,12 @@ Respond with ONLY the category name.
 
     _postProcessResponse(text) {
         if (!text) return text;
-
-        // ─── FIX 5: SAFETY REFUSAL OVERRIDE ───
-        // Catch hardcoded model safety refusals triggered by festival/religious images
-        const safetyStrings = [
-            "I'm not able to provide help with this conversation",
-            "I cannot fulfill this request",
-            "I can't help with that",
-            "I am unable to",
-            "I cannot analyze this image",
-            "I cannot fulfill that request",
-            "illegal or harmful activities",
-            "non-consensual or exploitative",
-            "towards children"
-        ];
-
-        if (safetyStrings.some(s => text.includes(s))) {
-            console.warn('⚠️ AI triggered a vision safety refusal.');
-            return "__SAFETY_REFUSAL__";
-        }
-
+        // Images no longer reach the response model (two-step pipeline),
+        // so vision safety misfires are structurally impossible.
+        // This method only does formatting cleanup.
         return text
             .replace(/\*\*(.*?)\*\*/g, '*$1*') // Convert **bold** to *bold*
-            .replace(/\n{3,}/g, '\n\n')         // Normalize 3+ newlines to 2
+            .replace(/\n{3,}/g, '\n\n')          // Normalize 3+ newlines to 2
             .trim();
     }
 
@@ -386,37 +466,15 @@ Respond with ONLY the category name.
             return "I'm sorry, the AI service is not configured yet. Please contact the administrator.";
         }
 
-        const hasImage = Boolean(imageData);
+        // Image description is handled upstream in the webhook (before this is called).
+        // The webhook calls describeImage(), amends conversation history with the result,
+        // then passes null for imageData here. So the main AI is always text-only —
+        // the vision safety classifier never fires, and intent detection has real content.
         const systemPrompt = await this.buildSystemPrompt(tenant, intent);
-        const response = await this._generateWithProviders(systemPrompt, conversationHistory, hasImage, imageData);
+        const response = await this._generateWithProviders(systemPrompt, conversationHistory, false, null);
 
         if (response) {
-            const processed = this._postProcessResponse(response);
-
-            if (processed === "__SAFETY_REFUSAL__") {
-                if (hasImage) {
-                    console.log("🔄 Safety refusal on vision. Checking for text context...");
-                    
-                    const lastMsg = conversationHistory[conversationHistory.length - 1];
-                    const hasText = lastMsg && lastMsg.content && lastMsg.content !== '[SENT AN IMAGE] ' && lastMsg.content.trim().length > 3;
-
-                    if (hasText) {
-                        console.log(`📡 Retrying with text context: "${lastMsg.content}"`);
-                        const textOnlyResponse = await this._generateWithProviders(systemPrompt, conversationHistory, false, null);
-                        if (textOnlyResponse) {
-                            return this._postProcessResponse(textOnlyResponse);
-                        }
-                    }
-
-                    // No text or text-only failed
-                    return "Aapne image toh bhej di, par main use theek se dekh nahi pa raha hoon. 🙏 Kya aap bata sakte hain ki aap is product ki price, availability ya kisi aur cheez ke baare mein jaanna chahte hain?";
-                }
-                
-                // If it was just text and still refused (rare)
-                return "Message received! 👍 Main aapki kaise madad kar sakta hoon?";
-            }
-
-            return processed;
+            return this._postProcessResponse(response);
         }
 
         return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";

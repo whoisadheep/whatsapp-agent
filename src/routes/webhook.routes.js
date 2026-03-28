@@ -779,10 +779,49 @@ router.post('/', async (req, res) => {
                     await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
                 }
 
-                // If AI triggered a Google Review request
-                if (shouldScheduleReview) {
-                    console.log(`⭐ AI triggered Google Review request for ${senderNumber}`);
-                    await reviewService.scheduleReview(tenant.id, pushName, senderNumber);
+                // ─── REVIEW TRIGGER: Code-level closure detection ─────────────
+                // We don't rely on the AI to append [SCHEDULE_REVIEW] — LLMs
+                // forget to append tags on short casual messages like "thanks" or
+                // "theek hai" which are exactly the right moments to ask for a review.
+                //
+                // Instead: detect closure signals in the customer's own message,
+                // then schedule directly. The AI tag is kept as a secondary trigger
+                // for cases the code misses (e.g. longer positive closings).
+                //
+                // Closure detection: score the raw inbound message for positive
+                // sentiment morphemes. If score >= threshold AND tenant has a
+                // review link AND this customer had >= 2 prior messages → schedule.
+                if (tenant.reviewLink && messageText) {
+                    const closureSignals = [
+                        // Explicit thanks / satisfaction
+                        /\b(thanks|thank you|shukriya|dhanyavad|dhanyabad|bahut shukriya|bahut dhanyavad)\b/i,
+                        /\b(bahut accha|bahut badhiya|superb|excellent|perfect|best|zabardast)\b/i,
+                        // Confirmation of receipt / completion
+                        /\b(mil gaya|mil gyi|aa gaya|aa gyi|received|le liya|ho gaya|ho gyi|done|completed)\b/i,
+                        /\b(theek hai|theek h|thik hai|sahi hai|bilkul sahi|sahi|ok bhai|okay bhai)\b/i,
+                        // Positive goodbye
+                        /\b(bye|alvida|phir milenge|phir aaunga|zaroor aaunga|aata rahunga)\b/i,
+                        // Satisfaction emoji clusters
+                        /[👍✅🙏😊🤝❤️]{1,}/u,
+                    ];
+
+                    const closureScore = closureSignals.filter(rx => rx.test(messageText)).length;
+                    const isPositiveClosure = closureScore >= 1;
+
+                    // Only trigger if this is a real engaged customer (not first message)
+                    const priorMsgCount = history.filter(m => m.role === 'user').length;
+                    const isEngaged = priorMsgCount >= 2;
+
+                    if (isPositiveClosure && isEngaged) {
+                        console.log(`⭐ Closure detected (score=${closureScore}) for ${senderNumber} — scheduling review`);
+                        reviewService.scheduleReview(tenant.id, pushName, senderNumber, false).catch(() => { });
+                    }
+                }
+
+                // Secondary: AI tag fallback (catches longer positive closings the regex misses)
+                if (shouldScheduleReview && tenant.reviewLink) {
+                    console.log(`⭐ AI tag triggered review for ${senderNumber}`);
+                    reviewService.scheduleReview(tenant.id, pushName, senderNumber, false).catch(() => { });
                 }
 
                 console.log(`✅ Batched conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Products: ${productService.getCount(tenant.id)}`);
