@@ -7,7 +7,7 @@ class AIService {
         // ── NVIDIA (Primary) ──
         this.nvidiaKey = process.env.NVIDIA_API_KEY;
         this.nvidiaBaseUrl = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
-        this.nvidiaTextModel = process.env.NVIDIA_MODEL_NAME || 'meta/llama-3.1-405b-instruct';
+        this.nvidiaTextModel = process.env.NVIDIA_MODEL_NAME || 'meta/llama-3.3-70b-instruct';
         this.nvidiaVisionModel = process.env.NVIDIA_VISION_MODEL || 'meta/llama-3.2-90b-vision-instruct';
 
         if (this.nvidiaKey) {
