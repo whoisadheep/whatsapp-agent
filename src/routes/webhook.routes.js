@@ -753,8 +753,10 @@ router.post('/', async (req, res) => {
                     }
                 }
 
-                if (!voiceSent) {
+                if (!voiceSent && cleanedResponse) {
                     await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
+                } else if (!voiceSent && !cleanedResponse) {
+                    console.log(`⏭️ AI response was empty (likely only tags). Not sending empty text.`);
                 }
 
                 // If AI triggered a QR
@@ -827,7 +829,7 @@ router.post('/', async (req, res) => {
                 console.log(`✅ Batched conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Products: ${productService.getCount(tenant.id)}`);
 
             } catch (err) {
-                console.error(`❌ Batch processing error for ${senderNumber}:`, err.message);
+                console.error(`❌ Batch processing error for ${senderNumber}:`, err.response?.data || err.message || err);
             }
         }, BATCH_DELAY_MS);
 

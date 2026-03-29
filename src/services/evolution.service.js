@@ -30,7 +30,7 @@ class EvolutionService {
         console.log(`ℹ️  Instance "${instanceName}" already exists`);
         return null;
       }
-      console.error(`❌ Failed to create instance ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to create instance ${instanceName}:`, error.response?.data || error.message || error);
       throw error;
     }
   }
@@ -54,7 +54,7 @@ class EvolutionService {
       console.log(`✅ Webhook configured for ${instanceName}: ${webhookUrl}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to set webhook for ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to set webhook for ${instanceName}:`, error.response?.data || error.message || error);
       throw error;
     }
   }
@@ -69,7 +69,7 @@ class EvolutionService {
       console.log(`📤 Reply sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to send message to ${number} via ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to send message to ${number} via ${instanceName}:`, error.response?.data || error.message || error);
       throw error;
     }
   }
@@ -99,7 +99,7 @@ class EvolutionService {
       console.log(`🖼️ Image (${mimeType}) sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to send image to ${number} via ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to send image to ${number} via ${instanceName}:`, error.response?.data || error.message || error);
       throw error;
     }
   }
@@ -120,7 +120,7 @@ class EvolutionService {
       console.log(`🔊 Audio sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to send audio to ${number} via ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to send audio to ${number} via ${instanceName}:`, error.response?.data || error.message || error);
       throw error;
     }
   }
@@ -131,7 +131,7 @@ class EvolutionService {
       const response = await this.client.get(`/instance/connectionState/${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to get instance status for ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to get instance status for ${instanceName}:`, error.response?.data || error.message || error);
       return null;
     }
   }
@@ -142,7 +142,7 @@ class EvolutionService {
       const response = await this.client.get(`/instance/connect/${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to get QR code for ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to get QR code for ${instanceName}:`, error.response?.data || error.message || error);
       return null;
     }
   }
@@ -182,7 +182,7 @@ class EvolutionService {
       console.log(`✅ Media downloaded (${Math.round(base64.length / 1024)} KB base64)`);
       return base64;
     } catch (error) {
-      console.error(`❌ Failed to download media from ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to download media from ${instanceName}:`, error.response?.data || error.message || error);
       return null;
     }
   }
@@ -203,7 +203,7 @@ class EvolutionService {
       // Evolution API returns { code: "ABC-DEF-GH" } or similar
       return response.data?.code || null;
     } catch (error) {
-      console.error(`❌ Failed to get pairing code for ${instanceName}:`, error.response?.data || error.message);
+      console.error(`❌ Failed to get pairing code for ${instanceName}:`, error.response?.data || error.message || error);
       return null;
     }
   }
