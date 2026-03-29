@@ -830,7 +830,16 @@ router.post('/', async (req, res) => {
                 console.log(`✅ Batched conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Products: ${productService.getCount(tenant.id)}`);
 
             } catch (err) {
-                console.error(`❌ Batch processing error for ${senderNumber}:`, err.response?.data ? JSON.stringify(err.response.data) : (err.message || 'Unknown error'));
+                let safeErr = 'Unknown';
+                if (err?.response?.data) safeErr = JSON.stringify(err.response.data);
+                else {
+                    let info = [];
+                    if (err?.message) info.push(`MSG: ${err.message}`);
+                    if (err?.name) info.push(`NAME: ${err.name}`);
+                    if (info.length === 0) { try { safeErr = JSON.stringify(err, Object.getOwnPropertyNames(err)).substring(0,200); } catch(e){} }
+                    else safeErr = info.join(' | ');
+                }
+                console.error(`❌ Batch processing error for ${senderNumber}: ${safeErr}`);
             }
         }, BATCH_DELAY_MS);
 

@@ -1,5 +1,22 @@
 const axios = require('axios');
 
+function getSafeError(err) {
+  if (!err) return 'Null error';
+  if (typeof err === 'string') return err;
+  let info = [];
+  if (err.message) info.push(`MSG: ${err.message}`);
+  if (err.name) info.push(`NAME: ${err.name}`);
+  if (err.code) info.push(`CODE: ${err.code}`);
+  if (err.response) {
+    info.push(`RES_STAT: ${err.response.status}`);
+    info.push(`RES_DATA: ${JSON.stringify(err.response.data)}`);
+  }
+  if (info.length === 0) {
+    try { info.push('RAW: ' + JSON.stringify(err, Object.getOwnPropertyNames(err)).substring(0, 200)); } catch(e) { info.push('Un-stringifiable object'); }
+  }
+  return info.join(' | ');
+}
+
 class EvolutionService {
   constructor() {
     this.apiUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -30,7 +47,7 @@ class EvolutionService {
         console.log(`ℹ️  Instance "${instanceName}" already exists`);
         return null;
       }
-      console.error(`❌ Failed to create instance ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to create instance ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       throw error;
     }
   }
@@ -54,7 +71,7 @@ class EvolutionService {
       console.log(`✅ Webhook configured for ${instanceName}: ${webhookUrl}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to set webhook for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to set webhook for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       throw error;
     }
   }
@@ -69,7 +86,7 @@ class EvolutionService {
       console.log(`📤 Reply sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to send message to ${number} via ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to send message to ${number} via ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       throw error;
     }
   }
@@ -99,7 +116,7 @@ class EvolutionService {
       console.log(`🖼️ Image (${mimeType}) sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to send image to ${number} via ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to send image to ${number} via ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       throw error;
     }
   }
@@ -120,7 +137,7 @@ class EvolutionService {
       console.log(`🔊 Audio sent to ${number} via ${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to send audio to ${number} via ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to send audio to ${number} via ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       throw error;
     }
   }
@@ -131,7 +148,7 @@ class EvolutionService {
       const response = await this.client.get(`/instance/connectionState/${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to get instance status for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to get instance status for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       return null;
     }
   }
@@ -142,7 +159,7 @@ class EvolutionService {
       const response = await this.client.get(`/instance/connect/${instanceName}`);
       return response.data;
     } catch (error) {
-      console.error(`❌ Failed to get QR code for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to get QR code for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       return null;
     }
   }
@@ -182,7 +199,7 @@ class EvolutionService {
       console.log(`✅ Media downloaded (${Math.round(base64.length / 1024)} KB base64)`);
       return base64;
     } catch (error) {
-      console.error(`❌ Failed to download media from ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to download media from ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       return null;
     }
   }
@@ -203,7 +220,7 @@ class EvolutionService {
       // Evolution API returns { code: "ABC-DEF-GH" } or similar
       return response.data?.code || null;
     } catch (error) {
-      console.error(`❌ Failed to get pairing code for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : (error.message || 'Unknown error'));
+      console.error(`❌ Failed to get pairing code for ${instanceName}:`, error.response?.data ? JSON.stringify(error.response.data) : getSafeError(error));
       return null;
     }
   }
