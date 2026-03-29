@@ -829,7 +829,7 @@ router.post('/', async (req, res) => {
                 console.log(`✅ Batched conversation handled on ${tenant.name} | Active chats: ${conversationService.getActiveCount()} | Products: ${productService.getCount(tenant.id)}`);
 
             } catch (err) {
-                console.error(`❌ Batch processing error for ${senderNumber}:`, err.response?.data || err.message || err);
+                console.error(`❌ Batch processing error for ${senderNumber}:`, err.response?.data ? JSON.stringify(err.response.data) : (err.message || 'Unknown error'));
             }
         }, BATCH_DELAY_MS);
 
