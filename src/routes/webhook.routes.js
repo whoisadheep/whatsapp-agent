@@ -753,10 +753,11 @@ router.post('/', async (req, res) => {
                     }
                 }
 
-                if (!voiceSent && cleanedResponse) {
+                if (!voiceSent && typeof cleanedResponse === 'string' && cleanedResponse.trim().length > 0) {
+                    console.log(`[DEBUG] AI sending text [${cleanedResponse.length} chars]: ${JSON.stringify(cleanedResponse)}`);
                     await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
-                } else if (!voiceSent && !cleanedResponse) {
-                    console.log(`⏭️ AI response was empty (likely only tags). Not sending empty text.`);
+                } else if (!voiceSent) {
+                    console.log(`⏭️ AI response was empty (likely only tags). Content was: ${JSON.stringify(cleanedResponse)}`);
                 }
 
                 // If AI triggered a QR
