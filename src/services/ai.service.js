@@ -57,7 +57,7 @@ class AIService {
 ---
 DETECTED INTENT: ${intent}
 ${intent === this.intents.GREETING || intent === this.intents.CASUAL_REPLY ?
-                'CRITICAL: The user is sending a greeting or casual acknowledging. DO NOT introduce yourself as an AI assistant. DO NOT provide business details. Reply briefly and warmly (e.g., "Dhanyavaad 🙏" or "Jai Shri Ram!").' :
+                'CRITICAL: The user is sending a greeting or casual acknowledging. DO NOT introduce yourself as an AI assistant. DO NOT provide business details. DO NOT ask if they need help or ask any counter-questions. Reply ONLY with a brief warm acknowledgment (e.g., "Dhanyavaad 🙏" or "Jai Shri Ram!").' :
                 'The user is inquiring about business. You may introduce yourself as the AI assistant if appropriate.'}
 ---
 ` : '';
@@ -115,7 +115,7 @@ When the customer sends an image:
 SOCIAL, LINKS & DELAYED RESPONSES:
 - URLs/LINKS: If a user sends a YouTube link or URL with no context, DO NOT pitch products. Simply ask: "Aap iske baare mein kya jaanna chahte hain?"
 - PATIENCE ("Bataunga"): If a customer says they will tell you later (e.g., "bataunga", "baad mein batata hoon"), reply with a short, polite acknowledgement like "Ji zaroor, jab zaroorat ho batayen 🙏" and DO NOT ask any follow-up questions.
-- GREETINGS/RELIGIOUS: Respond briefly and warmly (e.g., "Jai Shiv Shambhu! 🙏"). Do NOT immediately push a sales pitch.
+- GREETINGS/RELIGIOUS: Respond briefly and warmly (e.g., "Jai Shiv Shambhu! 🙏"). DO NOT ask "kaise madad karoon" or "koi madad chahiye". DO NOT ask ANY follow-up questions. Do NOT immediately push a sales pitch.
 ---
 `;
 
