@@ -24,8 +24,9 @@ const processedMessageIds = new Set();
 const MAX_PROCESSED_IDS = 200;
 
 // ─── DEBOUNCER STATE ───
-// We map chatKey -> { timer, imageData, audioMessage } so we don't lose media during rapid-fire texts
+// We map chatKey -> { timer, imageData, audioMessage, textBuffer } so we don't lose context during rapid-fire texts
 const typingState = new Map();
+const chatLocks = new Map(); // Mutex to prevent overlapping AI generations per chat
 const BATCH_DELAY_MS = 4000; // Wait 4 seconds after their last message before replying
 
 // ─── IMAGE CONTEXT HELPERS ───────────────────────────────────────────────────
@@ -33,15 +34,15 @@ const BATCH_DELAY_MS = 4000; // Wait 4 seconds after their last message before r
 function classifyImageContext(caption) {
     if (!caption) return null;
     const text = caption.toLowerCase();
-    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|bank|transfer|₹|\d{4,}/))
+    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|bank|transfer|₹|\d{4,}|receipt|qr\s*code|scan|screenshot/))
         return 'PAYMENT_SCREENSHOT';
-    if (text.match(/invoice|bill|receipt|order/))
+    if (text.match(/invoice|bill|order|ledger|statement/))
         return 'INVOICE_OR_BILL';
-    if (text.match(/cctv|camera|biometric|device|model|panel|product|item/))
+    if (text.match(/cctv|camera|biometric|device|model|panel|product|item|box|packaging/))
         return 'PRODUCT_IMAGE';
-    if (text.match(/location|map|address|site/))
+    if (text.match(/location|map|address|site|google\s*maps/))
         return 'LOCATION_IMAGE';
-    if (text.match(/mahakal|shiv|durga|ganesh|hanuman|aarti|mandir|festival|diwali|holi|eid|navratri|puja|prasad|🙏|🪔|🕉️/))
+    if (text.match(/mahakal|shiv|durga|ganesh|hanuman|aarti|mandir|festival|diwali|holi|eid|navratri|puja|prasad|🙏|🪔|🕉️|god|deity|goddess|statue|temple|religious|greeting/))
         return 'FESTIVAL_IMAGE';
     return null;
 }
@@ -562,11 +563,14 @@ router.post('/', async (req, res) => {
 
         // ─── IMAGE HANDLING: Download image if message is a photo ───
         let imageData = null;
+        let imageDescription = null;
         if (imageMessage) {
             console.log(`🖼️  Image message detected (${messageId}), downloading...`);
             imageData = await evolutionService.downloadMedia(tenant.instanceName, messageId);
             if (imageData) {
-                console.log('✅ Image downloaded successfully');
+                console.log('✅ Image downloaded successfully. Running Vision description...');
+                imageDescription = await aiService.describeImage(imageData);
+                if (imageDescription) console.log(`🖼️  Vision described as: "${imageDescription}"`);
             }
         }
 
@@ -605,10 +609,20 @@ router.post('/', async (req, res) => {
             // Use rich semantic context instead of bare "[SENT AN IMAGE]"
             // so the AI knows HOW to respond (festival greeting vs payment vs product)
             const imgCaption = imageMessage.caption || '';
-            const imgType = classifyImageContext(imgCaption);
+            let imgType = classifyImageContext(imgCaption);
+            
+            // If the user sent NO caption, try to classify based on what the AI saw
+            if (!imgType && imageDescription) {
+                imgType = classifyImageContext(imageDescription);
+            }
+
             processedText = buildImageContextText(!!imageData, imgCaption, imgType);
+            
+            if (imageDescription) {
+                processedText += `\n[AI Vision interpreted the image as: "${imageDescription}"]`;
+            }
             if (messageText && messageText !== imgCaption) {
-                processedText += ` User also wrote: "${messageText}"`;
+                processedText += `\nUser also wrote: "${messageText}"`;
             }
         }
 
@@ -617,8 +631,8 @@ router.post('/', async (req, res) => {
             processedText = `[Replying to previous message: "${quotedText.substring(0, 100)}..."]\nCustomer says: ${processedText}`;
         }
 
-        // Save to DB immediately so the next webhook sees it
-        await conversationService.addMessage(tenant.id, senderNumber, 'user', processedText, pushName);
+        // We DO NOT save to DB immediately; it's saved after batching completes.
+        // This ensures rapid-fire messages are treated as a single user turn.
 
         // Lead Capture (do this immediately too)
         const interest = leadService.extractInterest(messageText);
@@ -683,7 +697,7 @@ router.post('/', async (req, res) => {
 
         // Initialize state for this chat if it doesn't exist
         if (!typingState.has(chatKey)) {
-            typingState.set(chatKey, { timer: null, imageData: null, audioMessage: null });
+            typingState.set(chatKey, { timer: null, imageData: null, audioMessage: null, textBuffer: [] });
         }
 
         const state = typingState.get(chatKey);
@@ -691,6 +705,9 @@ router.post('/', async (req, res) => {
         // Preserve media if they sent an image/audio then immediately sent text
         if (imageData) state.imageData = imageData;
         if (audioMessage) state.audioMessage = audioMessage;
+        
+        // Append text to the batch buffer
+        if (processedText) state.textBuffer.push(processedText);
 
         // Reset the timer!
         if (state.timer) {
@@ -702,23 +719,32 @@ router.post('/', async (req, res) => {
         res.status(200).json({ status: 'queued_for_batching' });
 
         // Start the countdown
-        state.timer = setTimeout(async () => {
+        state.timer = setTimeout(() => {
             // Grab the accumulated media before cleaning up
             const finalImageData = state.imageData;
             const finalAudioMsg = state.audioMessage;
+            const batchedText = state.textBuffer.join('\n');
+            const finalPushName = pushName;
 
             // Clean up the map
             typingState.delete(chatKey);
 
-            try {
-                // Get conversation history (this will now contain ALL messages they sent in the last 4 seconds!)
-                const history = await conversationService.getHistory(tenant.id, senderNumber);
+            // Mutex: Wait for any previous AI generation to finish before processing this batch
+            const prevTask = chatLocks.get(chatKey) || Promise.resolve();
+            const currTask = prevTask.then(async () => {
+                try {
+                    // 1. Save accumulated text to DB NOW, as a single unified turn
+                    if (batchedText.trim()) {
+                        await conversationService.addMessage(tenant.id, senderNumber, 'user', batchedText, finalPushName);
+                    }
 
-                // Detect Intent
-                const lastMessageText = history.length > 0 ? history[history.length - 1].content : '';
-                console.log(`🔍 Detecting intent for: "${lastMessageText.slice(0, 50)}..."`);
-                const intent = await aiService.detectIntent(tenant, lastMessageText);
-                console.log(`🎯 Detected intent: ${intent}`);
+                    // Get conversation history (this will now contain the full unified message)
+                    const history = await conversationService.getHistory(tenant.id, senderNumber);
+
+                    // Detect Intent on the FULL batched text
+                    console.log(`🔍 Detecting intent for batched: "${batchedText.slice(0, 50)}..."`);
+                    const intent = await aiService.detectIntent(tenant, batchedText);
+                    console.log(`🎯 Detected intent: ${intent}`);
 
                 // Choose Response Strategy
                 if (intent === aiService.intents.PERSONAL_UNRELATED) {
@@ -853,6 +879,8 @@ router.post('/', async (req, res) => {
                 }
                 console.error(`❌ Batch processing error for ${senderNumber}: ${safeErr}`);
             }
+            });
+            chatLocks.set(chatKey, currTask);
         }, BATCH_DELAY_MS);
 
     } catch (error) {

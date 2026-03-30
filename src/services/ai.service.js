@@ -145,7 +145,17 @@ STRICT INVENTORY & SCOPE RULES:
 ---
 `;
 
-        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES;
+        // ─── FIX 4: Conversation Continuity ───
+        const CONVERSATION_FLOW_RULES = `
+---
+CONVERSATION CONTINUITY:
+- NEVER repeat the exact same formal greeting, introduction, or canned response if you have already sent it in the current conversation history. 
+- If the customer is providing follow-up details (like amounts, billing specs, or clarifying) to a topic you already responded to, simply acknowledge the new details naturally and nicely (e.g., "Ji maine amount note kar liya hai"). DO NOT repeat paragraphs you already sent.
+- Respond like a natural human assistant flowing with the conversation.
+---
+`;
+
+        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES + CONVERSATION_FLOW_RULES;
     }
 
     /**
@@ -208,7 +218,7 @@ STRICT INVENTORY & SCOPE RULES:
 
         // ── 3. STRUCTURAL SIGNALS ──────────────────────────────────────────────
         const wordCount = raw.split(/\s+/).filter(Boolean).length;
-        const hasQuestion = raw.includes('?');
+        const hasQuestion = raw.includes('?') || /\b(?:what|why|where|how|when|kya|kyu|kyun|kaha|kahan|kaise|kab|kitna|kitne|kisne|kise)\b/i.test(lower) || /क्या|कहाँ|कैसे|क्यों|कब|कितना|किसने|किसको|कौन/.test(raw);
         const emojiCount = (raw.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []).length;
         const emojiRatio = emojiCount / Math.max(wordCount, 1);
 
@@ -220,7 +230,7 @@ STRICT INVENTORY & SCOPE RULES:
         // Contact/action signal: forward-slash (model numbers), @ symbol, URLs
         const hasRefSignal = /\/|@|https?:\/\/|www\./.test(raw);
         // Salutation pattern: message starts with a single word ≤8 chars, possibly followed by punctuation
-        const startsLikeSalutation = /^[\w\u0900-\u097F]{1,8}[!?.\s]*$/.test(raw);
+        const startsLikeSalutation = !hasQuestion && /^[\w\u0900-\u097F]{1,8}[!.+\s]*$/.test(raw);
 
         // ── 5. SCORING ────────────────────────────────────────────────────────
         // Assign weighted scores for BUSINESS and CASUAL signals.
@@ -230,7 +240,7 @@ STRICT INVENTORY & SCOPE RULES:
         let casualScore = 0;
 
         // Business signals
-        if (hasQuestion) businessScore += 3;  // Questions are almost always business
+        if (hasQuestion) businessScore += 4;  // Questions are almost always business
         if (hasPriceSignal) businessScore += 4;  // Prices = definitely business
         if (hasSpecSignal) businessScore += 3;  // Specs = product inquiry
         if (hasRefSignal) businessScore += 2;  // Model numbers, links
@@ -238,12 +248,12 @@ STRICT INVENTORY & SCOPE RULES:
         if (isMixedScript) businessScore += 1;  // Hinglish tends toward business
         if (digitChars > 3) businessScore += 2;  // Numbers = prices, quantities
 
-        // Casual / greeting signals
-        if (wordCount <= 3) casualScore += 3;  // Very short = casual
+        // Casual / greeting signals (heavily nerfed if it contains a question block)
+        if (wordCount <= 3 && !hasQuestion) casualScore += 3;  // Very short non-questions = casual
         if (emojiRatio > 0.3) casualScore += 2;  // Emoji-heavy = social
-        if (startsLikeSalutation) casualScore += 3;  // Single-word opener = greeting
+        if (startsLikeSalutation) casualScore += 4;  // Single-word opener = greeting
         if (isDevanagariHeavy && !hasQuestion && wordCount <= 6) casualScore += 2;
-        if (wordCount <= 1) casualScore += 2;  // Single word is almost always casual
+        if (wordCount <= 1 && !hasQuestion) casualScore += 2;  // Single word non-questions = casual
 
         // ── 6. DECISION ───────────────────────────────────────────────────────
         console.log(`🧠 Intent signals — business:${businessScore} casual:${casualScore} words:${wordCount} q:${hasQuestion} price:${hasPriceSignal}`);
@@ -264,10 +274,30 @@ STRICT INVENTORY & SCOPE RULES:
 
     // ─────────────────────── NVIDIA: text ─────────────────────────
 
+    _mergeConsecutiveRoles(history) {
+        if (!history || history.length === 0) return [];
+        const merged = [];
+        let currentRole = history[0].role;
+        let currentContent = history[0].content;
+
+        for (let i = 1; i < history.length; i++) {
+            if (history[i].role === currentRole) {
+                currentContent += '\n' + history[i].content;
+            } else {
+                merged.push({ role: currentRole, content: currentContent });
+                currentRole = history[i].role;
+                currentContent = history[i].content;
+            }
+        }
+        merged.push({ role: currentRole, content: currentContent });
+        return merged;
+    }
+
     async _nvidiaText(systemPrompt, conversationHistory) {
+        const mergedHistory = this._mergeConsecutiveRoles(conversationHistory);
         const messages = [
             { role: 'system', content: systemPrompt },
-            ...conversationHistory.map((msg) => ({
+            ...mergedHistory.map((msg) => ({
                 role: msg.role === 'assistant' ? 'assistant' : 'user',
                 content: msg.content,
             })),
@@ -285,9 +315,10 @@ STRICT INVENTORY & SCOPE RULES:
     }
 
     async _groqText(systemPrompt, conversationHistory) {
+        const mergedHistory = this._mergeConsecutiveRoles(conversationHistory);
         const messages = [
             { role: 'system', content: systemPrompt },
-            ...conversationHistory.map((msg) => ({
+            ...mergedHistory.map((msg) => ({
                 role: msg.role === 'assistant' ? 'assistant' : 'user',
                 content: msg.content,
             })),
@@ -386,12 +417,14 @@ STRICT INVENTORY & SCOPE RULES:
     // ──────────────────────── Gemini: text ─────────────────────────
 
     async _geminiText(systemPrompt, conversationHistory) {
+        const mergedHistory = this._mergeConsecutiveRoles(conversationHistory);
+
         const model = this.geminiAI.getGenerativeModel({
             model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
         });
 
-        const contents = conversationHistory.map((msg) => ({
+        const contents = mergedHistory.map((msg) => ({
             role: msg.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: msg.content }],
         }));

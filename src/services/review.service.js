@@ -1,6 +1,7 @@
 const db = require('./db.service');
 const evolutionService = require('./evolution.service');
 const tenantService = require('./tenant.service');
+const conversationService = require('./conversation.service');
 
 class ReviewService {
     constructor() {
@@ -202,6 +203,9 @@ class ReviewService {
 
             console.log(`📤 Sending delayed review request to ${targetNumber} for ${tenant.name}`);
             await evolutionService.sendText(tenant.instanceName, targetNumber, message);
+
+            // Add the review message to the conversation history so the AI has context
+            await conversationService.addMessage(row.tenant_id, row.customer_phone, 'assistant', message);
 
             // Update DB
             if (db.isConnected()) {
