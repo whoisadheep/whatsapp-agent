@@ -641,7 +641,19 @@ router.post('/', async (req, res) => {
             if (isDealerRequest) {
                 console.log(`🏪 Dealer payment request from ${senderNumber} on ${tenant.name} — bypassing AI`);
 
-                const dealerReply = 'Namaste! 🙏 Main Kumud sir ka AI assistant hoon. Aapka payment/ledger message main sir ko abhi forward kar raha hoon. Sir aapse jaldi contact karenge. Dhanyawad!';
+                // Cancel any pending debouncer timer for this chat so the AI
+                // doesn't fire afterwards and send a second confusing reply.
+                const chatKey = `${tenant.id}:${senderNumber}`;
+                if (typingState.has(chatKey)) {
+                    const existingState = typingState.get(chatKey);
+                    if (existingState.timer) {
+                        clearTimeout(existingState.timer);
+                        console.log(`⏹️  Cancelled pending AI timer for dealer chat ${senderNumber}`);
+                    }
+                    typingState.delete(chatKey);
+                }
+
+                const dealerReply = 'Namaste! 🙏 Main Ranjan sir ka AI assistant hoon. Aapka payment/ledger message main sir ko abhi forward kar raha hoon. Sir aapse jaldi contact karenge. Dhanyawad!';
                 await evolutionService.sendText(tenant.instanceName, senderNumber, dealerReply);
                 await conversationService.addMessage(tenant.id, senderNumber, 'assistant', dealerReply);
 
@@ -836,7 +848,7 @@ router.post('/', async (req, res) => {
                     let info = [];
                     if (err?.message) info.push(`MSG: ${err.message}`);
                     if (err?.name) info.push(`NAME: ${err.name}`);
-                    if (info.length === 0) { try { safeErr = JSON.stringify(err, Object.getOwnPropertyNames(err)).substring(0,200); } catch(e){} }
+                    if (info.length === 0) { try { safeErr = JSON.stringify(err, Object.getOwnPropertyNames(err)).substring(0, 200); } catch (e) { } }
                     else safeErr = info.join(' | ');
                 }
                 console.error(`❌ Batch processing error for ${senderNumber}: ${safeErr}`);

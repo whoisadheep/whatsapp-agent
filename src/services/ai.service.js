@@ -21,17 +21,34 @@ class AIService {
             console.warn('⚠️  NVIDIA_API_KEY not set – NVIDIA provider disabled.');
         }
 
-        // ── Gemini (Fallback) ──
+        // ── Gemini (Fallback 1) ──
         this.geminiKey = process.env.GEMINI_API_KEY;
         if (this.geminiKey) {
             this.geminiAI = new GoogleGenerativeAI(this.geminiKey);
-            console.log('✅ Google Gemini client initialised (fallback)');
+            console.log('✅ Google Gemini client initialised (fallback 1)');
         } else {
             this.geminiAI = null;
             console.warn('⚠️  GEMINI_API_KEY not set – Gemini fallback disabled.');
         }
 
-        if (!this.nvidiaClient && !this.geminiAI) {
+        // ── Groq (Fallback 2 — free, fast Llama-3 hosting) ──
+        // Get a free key at console.groq.com — no billing required.
+        // Groq runs Llama-3.3-70b at ~500 tokens/sec, faster than NVIDIA.
+        // Free tier: 14,400 requests/day, 6,000 tokens/min — plenty for this use case.
+        this.groqKey = process.env.GROQ_API_KEY;
+        if (this.groqKey) {
+            this.groqClient = new OpenAI({
+                apiKey: this.groqKey,
+                baseURL: 'https://api.groq.com/openai/v1',
+            });
+            this.groqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+            console.log(`✅ Groq client initialised (fallback 2 — ${this.groqModel})`);
+        } else {
+            this.groqClient = null;
+            console.warn('⚠️  GROQ_API_KEY not set – Groq fallback disabled. Get a free key at console.groq.com');
+        }
+
+        if (!this.nvidiaClient && !this.geminiAI && !this.groqClient) {
             console.error('❌ No AI provider configured! AI responses will not work.');
         }
 
@@ -267,6 +284,25 @@ STRICT INVENTORY & SCOPE RULES:
         return completion.choices[0].message.content;
     }
 
+    async _groqText(systemPrompt, conversationHistory) {
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            ...conversationHistory.map((msg) => ({
+                role: msg.role === 'assistant' ? 'assistant' : 'user',
+                content: msg.content,
+            })),
+        ];
+
+        const completion = await this.groqClient.chat.completions.create({
+            model: this.groqModel,
+            messages,
+            temperature: 0.2,
+            max_tokens: 1024,
+        });
+
+        return completion.choices[0].message.content;
+    }
+
     // ─────────────────────── Image description pipeline ──────────────
     //
     // Two-step approach to eliminate vision safety misfires:
@@ -320,7 +356,7 @@ STRICT INVENTORY & SCOPE RULES:
         // Fallback: Gemini vision
         if (this.geminiAI) {
             try {
-                const model = this.geminiAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+                const model = this.geminiAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite' });
                 const result = await model.generateContent([
                     DESCRIBE_PROMPT,
                     { inlineData: { mimeType: 'image/jpeg', data: imageData } },
@@ -338,11 +374,12 @@ STRICT INVENTORY & SCOPE RULES:
         return null; // Both failed — caller handles gracefully
     }
 
-    // NVIDIA text (unchanged)
     async _nvidiaVision(systemPrompt, conversationHistory, imageData) {
-        // This method is now only called after imageData has been replaced
-        // with a text description — see generateResponse(). It runs as a
-        // normal text call with the description injected into history.
+        // Should never be called — the two-step pipeline in the webhook
+        // converts images to text descriptions before reaching this point.
+        // If this IS called, something is wrong upstream. Log a warning
+        // and fall back to text-only so at least we get a response.
+        console.warn('⚠️ _nvidiaVision called unexpectedly — image should have been pre-described. Falling back to text.');
         return this._nvidiaText(systemPrompt, conversationHistory);
     }
 
@@ -350,7 +387,7 @@ STRICT INVENTORY & SCOPE RULES:
 
     async _geminiText(systemPrompt, conversationHistory) {
         const model = this.geminiAI.getGenerativeModel({
-            model: 'gemini-1.5-flash',
+            model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
         });
 
@@ -369,7 +406,7 @@ STRICT INVENTORY & SCOPE RULES:
 
     async _geminiVision(systemPrompt, conversationHistory, imageData) {
         const model = this.geminiAI.getGenerativeModel({
-            model: 'gemini-1.5-flash',
+            model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
         });
 
@@ -418,6 +455,14 @@ STRICT INVENTORY & SCOPE RULES:
                 fn: hasImage
                     ? () => this._geminiVision(systemPrompt, conversationHistory, imageData)
                     : () => this._geminiText(systemPrompt, conversationHistory),
+            });
+        }
+
+        // Add Groq as third provider if available
+        if (this.groqClient) {
+            providers.push({
+                name: 'Groq',
+                fn: () => this._groqText(systemPrompt, conversationHistory),
             });
         }
 
