@@ -7,7 +7,7 @@ class AIService {
         // ── NVIDIA (Primary) ──
         this.nvidiaKey = process.env.NVIDIA_API_KEY;
         this.nvidiaBaseUrl = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
-        this.nvidiaTextModel = process.env.NVIDIA_MODEL_NAME || 'meta/llama-3.1-405b-instruct';
+        this.nvidiaTextModel = process.env.NVIDIA_MODEL_NAME || 'meta/llama-3.1-70b-instruct';
         this.nvidiaVisionModel = process.env.NVIDIA_VISION_MODEL || 'meta/llama-3.2-90b-vision-instruct';
 
         if (this.nvidiaKey) {
@@ -320,7 +320,7 @@ STRICT INVENTORY & SCOPE RULES:
         // Fallback: Gemini vision
         if (this.geminiAI) {
             try {
-                const model = this.geminiAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+                const model = this.geminiAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
                 const result = await model.generateContent([
                     DESCRIBE_PROMPT,
                     { inlineData: { mimeType: 'image/jpeg', data: imageData } },
@@ -350,7 +350,7 @@ STRICT INVENTORY & SCOPE RULES:
 
     async _geminiText(systemPrompt, conversationHistory) {
         const model = this.geminiAI.getGenerativeModel({
-            model: 'gemini-2.0-flash-lite',
+            model: 'gemini-1.5-flash',
             systemInstruction: systemPrompt,
         });
 
@@ -369,7 +369,7 @@ STRICT INVENTORY & SCOPE RULES:
 
     async _geminiVision(systemPrompt, conversationHistory, imageData) {
         const model = this.geminiAI.getGenerativeModel({
-            model: 'gemini-2.0-flash-lite',
+            model: 'gemini-1.5-flash',
             systemInstruction: systemPrompt,
         });
 
@@ -425,7 +425,7 @@ STRICT INVENTORY & SCOPE RULES:
             try {
                 console.log(`🔄 Trying provider: ${provider.name}...`);
 
-                const timeoutMs = 15000;
+                const timeoutMs = 45000;
                 const timeoutPromise = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error(`${provider.name} timed out after ${timeoutMs}ms`)), timeoutMs)
                 );
