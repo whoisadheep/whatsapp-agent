@@ -25,7 +25,8 @@ app.use(morgan('dev'));
 app.use('/webhook', webhookRoutes);
 app.use('/health', healthRoutes);
 app.use('/api/integration', require('./routes/integration.routes'));
-app.use('/api/coach', require('./routes/coach.routes'));   // ← NEW
+app.use('/api/coach', require('./routes/coach.routes'));
+app.use('/api/missed-call', require('./routes/missedcall.routes'));
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -35,6 +36,7 @@ app.get('/', (req, res) => {
         endpoints: {
             webhook: 'POST /webhook',
             health: 'GET  /health',
+            missedCall: 'POST /api/missed-call',
             coachTrigger: 'POST /api/coach/trigger',
             coachTriggerAll: 'POST /api/coach/trigger-all',
             coachHistory: 'GET  /api/coach/history/:tenantId',
