@@ -31,6 +31,15 @@ class AIService {
             console.warn('⚠️  GEMINI_API_KEY not set – Gemini fallback disabled.');
         }
 
+        // ── Gemini Backup (Fallback 1b — separate API key) ──
+        this.geminiKeyBackup = process.env.GEMINI_API_KEY_BACKUP;
+        if (this.geminiKeyBackup) {
+            this.geminiAI_backup = new GoogleGenerativeAI(this.geminiKeyBackup);
+            console.log('✅ Google Gemini BACKUP client initialised (fallback 1b)');
+        } else {
+            this.geminiAI_backup = null;
+        }
+
         // ── Groq (Fallback 2 — free, fast Llama-3 hosting) ──
         // Get a free key at console.groq.com — no billing required.
         // Groq runs Llama-3.3-70b at ~500 tokens/sec, faster than NVIDIA.
@@ -402,7 +411,43 @@ CONVERSATION CONTINUITY:
             }
         }
 
-        return null; // Both failed — caller handles gracefully
+        // Fallback: Gemini backup vision (separate API key)
+        if (this.geminiAI_backup) {
+            try {
+                const model = this.geminiAI_backup.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite' });
+                const result = await model.generateContent([
+                    DESCRIBE_PROMPT,
+                    { inlineData: { mimeType: 'image/jpeg', data: imageData } },
+                ]);
+                const desc = result.response.text()?.trim();
+                if (desc) {
+                    console.log(`🖼️  [Gemini-Backup] Image described: "${desc}"`);
+                    return desc;
+                }
+            } catch (err) {
+                console.error('❌ [Gemini-Backup] _describeImage failed:', err.message);
+            }
+        }
+
+        return null; // All providers failed — caller handles gracefully
+    }
+
+    async classifyImageText(description) {
+        if (!description) return 'GENERAL_IMAGE';
+        
+        const sysPrompt = "You are a classification engine. Categorize the given image description strictly into ONE of these outputs: PAYMENT_SCREENSHOT, INVOICE_OR_BILL, PRODUCT_IMAGE, FESTIVAL_IMAGE, LOCATION_IMAGE, GENERAL_IMAGE. Return ONLY the category name. Do not phrase it as a sentence.";
+        const history = [{ role: 'user', content: description }];
+        
+        // This leverages the fallback logic (NVIDIA -> Gemini -> Groq) automatically
+        const result = await this._generateWithProviders(sysPrompt, history, false, null);
+        
+        if (result) {
+            const clean = result.replace(/[^A-Z_]/gi, '').toUpperCase();
+            if (['PAYMENT_SCREENSHOT', 'INVOICE_OR_BILL', 'PRODUCT_IMAGE', 'FESTIVAL_IMAGE', 'LOCATION_IMAGE'].includes(clean)) {
+                return clean;
+            }
+        }
+        return 'GENERAL_IMAGE';
     }
 
     async _nvidiaVision(systemPrompt, conversationHistory, imageData) {
@@ -416,10 +461,11 @@ CONVERSATION CONTINUITY:
 
     // ──────────────────────── Gemini: text ─────────────────────────
 
-    async _geminiText(systemPrompt, conversationHistory) {
+    async _geminiText(systemPrompt, conversationHistory, geminiClient) {
+        const client = geminiClient || this.geminiAI;
         const mergedHistory = this._mergeConsecutiveRoles(conversationHistory);
 
-        const model = this.geminiAI.getGenerativeModel({
+        const model = client.getGenerativeModel({
             model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
         });
@@ -437,8 +483,9 @@ CONVERSATION CONTINUITY:
 
     // ──────────────────────── Gemini: vision ──────────────────────
 
-    async _geminiVision(systemPrompt, conversationHistory, imageData) {
-        const model = this.geminiAI.getGenerativeModel({
+    async _geminiVision(systemPrompt, conversationHistory, imageData, geminiClient) {
+        const client = geminiClient || this.geminiAI;
+        const model = client.getGenerativeModel({
             model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite',
             systemInstruction: systemPrompt,
         });
@@ -488,6 +535,16 @@ CONVERSATION CONTINUITY:
                 fn: hasImage
                     ? () => this._geminiVision(systemPrompt, conversationHistory, imageData)
                     : () => this._geminiText(systemPrompt, conversationHistory),
+            });
+        }
+
+        // Gemini backup — same logic, different API key (avoids 429 quota errors)
+        if (this.geminiAI_backup) {
+            providers.push({
+                name: 'Gemini-Backup',
+                fn: hasImage
+                    ? () => this._geminiVision(systemPrompt, conversationHistory, imageData, this.geminiAI_backup)
+                    : () => this._geminiText(systemPrompt, conversationHistory, this.geminiAI_backup),
             });
         }
 

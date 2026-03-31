@@ -30,26 +30,11 @@ const chatLocks = new Map(); // Mutex to prevent overlapping AI generations per 
 const BATCH_DELAY_MS = 4000; // Wait 4 seconds after their last message before replying
 
 // ─── IMAGE CONTEXT HELPERS ───────────────────────────────────────────────────
-// Classify image type from caption keywords
-function classifyImageContext(caption) {
-    if (!caption) return null;
-    const text = caption.toLowerCase();
-    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|₹|receipt|qr\s*code|scan/))
-        return 'PAYMENT_SCREENSHOT';
-    if (text.match(/invoice|bill|order|ledger|statement/))
-        return 'INVOICE_OR_BILL';
-    if (text.match(/cctv|camera|biometric|device|model|panel|product|item|box|packaging/))
-        return 'PRODUCT_IMAGE';
-    if (text.match(/location|map|address|site|google\s*maps/))
-        return 'LOCATION_IMAGE';
-    if (text.match(/mahakal|shiv|durga|ganesh|hanuman|aarti|mandir|festival|diwali|holi|eid|navratri|puja|prasad|🙏|🪔|🕉️|god|deity|goddess|statue|temple|religious|greeting/))
-        return 'FESTIVAL_IMAGE';
-    return null;
-}
+// Removed classifyImageContext since we are now using AI-driven context from ai.service.js
 
 // Build rich context string so AI always has meaningful guidance
 function buildImageContextText(imageDownloaded, caption, imageType) {
-    const type = imageType || classifyImageContext(caption) || 'GENERAL_IMAGE';
+    const type = imageType || 'GENERAL_IMAGE';
     let context = '[CUSTOMER SENT AN IMAGE';
     if (caption) context += ` with caption: "${caption}"`;
 
@@ -609,12 +594,10 @@ router.post('/', async (req, res) => {
             // Use rich semantic context instead of bare "[SENT AN IMAGE]"
             // so the AI knows HOW to respond (festival greeting vs payment vs product)
             const imgCaption = imageMessage.caption || '';
-            let imgType = classifyImageContext(imgCaption);
             
-            // If the user sent NO caption, try to classify based on what the AI saw
-            if (!imgType && imageDescription) {
-                imgType = classifyImageContext(imageDescription);
-            }
+            // Generate combined text to give the LLM classifier maximum context
+            const combinedTextForClassification = `User Caption: ${imgCaption || 'none'}\nVisual Description: ${imageDescription || 'none'}`;
+            const imgType = await aiService.classifyImageText(combinedTextForClassification);
 
             processedText = buildImageContextText(!!imageData, imgCaption, imgType);
             
