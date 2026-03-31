@@ -64,7 +64,7 @@ function buildImageContextText(imageDownloaded, caption, imageType) {
             context += ' — Customer sent a product image. Ask a SHORT clarifying question (e.g., "Yeh product chahiye aapko? Price batata hoon."). Do NOT write a long description.';
             break;
         case 'FESTIVAL_IMAGE':
-            context += ' — Customer sent a festival or religious greeting image. Reply with a warm, brief festival wish in Hinglish (e.g., "Jai Shiv Shambhu! 🙏 Koi madad chahiye to batayen."). Do NOT pitch products.';
+            context += ' — Customer sent a festival or religious greeting image. Reply with a warm, brief festival wish in Hinglish (e.g., "Jai Shiv Shambhu! 🙏" or "Message mila! Dhanyawad"). Do NOT pitch products and DO NOT ask if they need help. Focus warmly on acknowledging the sender.';
             break;
         case 'LOCATION_IMAGE':
             context += ' — Customer sent a location/map image.';
