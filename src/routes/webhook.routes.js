@@ -34,7 +34,7 @@ const BATCH_DELAY_MS = 4000; // Wait 4 seconds after their last message before r
 function classifyImageContext(caption) {
     if (!caption) return null;
     const text = caption.toLowerCase();
-    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|bank|transfer|₹|\d{4,}|receipt|qr\s*code|scan|screenshot/))
+    if (text.match(/upi|pay|paid|payment|transaction|gpay|phonepe|paytm|₹|receipt|qr\s*code|scan/))
         return 'PAYMENT_SCREENSHOT';
     if (text.match(/invoice|bill|order|ledger|statement/))
         return 'INVOICE_OR_BILL';
@@ -644,10 +644,10 @@ router.post('/', async (req, res) => {
         // We detect it in code, send the safe hardcoded reply, and alert the owner.
         if (messageText && tenant.id === 'sai_infotek') {
             const dealerTriggers = [
-                'payment transfer kar', 'mera payment', 'mujhe paise', 'ledger bhejo',
+                'payment transfer', 'mera payment', 'mujhe paise', 'ledger',
                 'outstanding clear', 'baki payment', 'mera amount', 'paisa bhejo',
-                'transfer kar de', 'payment kab', 'mera balance', 'settlement karo',
-                'mera paisa', 'payment do', 'paise do', 'payment chahiye',
+                'transfer kar', 'transfer karo', 'payment kab', 'mera balance', 'settlement',
+                'mera paisa', 'payment do', 'paise do', 'payment chahiye', 'pay karo', 'hisab'
             ];
             const msgLower = messageText.toLowerCase();
             const isDealerRequest = dealerTriggers.some(t => msgLower.includes(t));
