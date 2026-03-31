@@ -70,7 +70,7 @@ function buildImageContextText(imageDownloaded, caption, imageType) {
             context += ' — Customer sent a location/map image.';
             break;
         default:
-            context += ' — This is likely a social/greeting/forwarded image. Reply warmly and briefly. Do NOT ask "what product do you want?" or treat it as a business inquiry. Simply say something friendly like "Message mila! Koi madad chahiye to batayen 😊"';
+            context += ' — Customer sent an image. If there is an AI Vision description provided below, reply naturally based on what is in the image. If there is no description or you are unsure, simply use a polite fallback like "Message mila! Dhanyawad 😊" without asking any follow-up questions or pitching products.';
     }
 
     if (!imageDownloaded) {
