@@ -22,7 +22,7 @@ router.post('/', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        const { phone, timestamp, event } = req.body;
+        const { phone, timestamp, event, tenant_id } = req.body;
 
         // 2. Validate payload
         if (!phone || event !== 'missed_call') {
@@ -36,28 +36,30 @@ router.post('/', async (req, res) => {
             normalizedPhone = '91' + normalizedPhone;
         }
 
-        console.log(`\n📞 MISSED CALL from: ${normalizedPhone} at ${new Date(timestamp).toLocaleString()}`);
-
-        // 4. Deduplication check
-        const lastSeen = recentMissedCalls.get(normalizedPhone);
-        if (lastSeen && Date.now() - lastSeen < DEDUP_WINDOW_MS) {
-            console.log(`⏭️ Duplicate missed call from ${normalizedPhone}, skipping`);
-            return res.status(200).json({ status: 'duplicate', phone: normalizedPhone });
-        }
-        recentMissedCalls.set(normalizedPhone, Date.now());
-
-        // Cleanup old entries
-        for (const [num, time] of recentMissedCalls) {
-            if (Date.now() - time > DEDUP_WINDOW_MS) recentMissedCalls.delete(num);
-        }
-
-        // 5. Find the tenant to use
+        // 4. Resolve tenant — app can send tenant_id, otherwise use env default
+        const targetTenantId = tenant_id || MISSED_CALL_TENANT_ID;
         const tenants = tenantService.getAllTenants();
-        const tenant = tenants.find(t => t.id === MISSED_CALL_TENANT_ID);
+        const tenant = tenants.find(t => t.id === targetTenantId);
 
         if (!tenant) {
-            console.error(`❌ Tenant "${MISSED_CALL_TENANT_ID}" not found`);
-            return res.status(500).json({ error: 'Tenant not configured' });
+            console.error(`❌ Tenant "${targetTenantId}" not found`);
+            return res.status(400).json({ error: `Tenant "${targetTenantId}" not found. Valid: ${tenants.map(t => t.id).join(', ')}` });
+        }
+
+        console.log(`\n📞 MISSED CALL from: ${normalizedPhone} → ${tenant.name} at ${new Date(timestamp).toLocaleString()}`);
+
+        // 5. Deduplication check (per-tenant so same number can trigger on different tenants)
+        const dedupKey = `${targetTenantId}:${normalizedPhone}`;
+        const lastSeen = recentMissedCalls.get(dedupKey);
+        if (lastSeen && Date.now() - lastSeen < DEDUP_WINDOW_MS) {
+            console.log(`⏭️ Duplicate missed call from ${normalizedPhone} on ${tenant.name}, skipping`);
+            return res.status(200).json({ status: 'duplicate', phone: normalizedPhone });
+        }
+        recentMissedCalls.set(dedupKey, Date.now());
+
+        // Cleanup old entries
+        for (const [key, time] of recentMissedCalls) {
+            if (Date.now() - time > DEDUP_WINDOW_MS) recentMissedCalls.delete(key);
         }
 
         // 6. Compose and send the WhatsApp message
