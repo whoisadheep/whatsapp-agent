@@ -196,7 +196,7 @@ class ReviewService {
                 return;
             }
 
-            const message = `Hi ${row.customer_name}, thanks for visiting us!\n\nIf you had a great experience, please take a moment to leave us a 5-star review here: ${tenant.reviewLink}\n\nWe appreciate your support!`;
+            const message = `Namaste! 🙏\n\nHamare yahan aane ke liye bohot shukriya. Agar aapka experience accha raha, toh please niche diye gaye link par click karke humein 5-star Google review dein:\n\n${tenant.reviewLink}\n\nAapke support se humein bohot help milegi! 😊`;
 
             // Clean number (ensure no spaces/plus)
             const targetNumber = row.customer_phone.replace(/\D/g, '');

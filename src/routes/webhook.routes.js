@@ -729,79 +729,87 @@ router.post('/', async (req, res) => {
                     const intent = await aiService.detectIntent(tenant, batchedText);
                     console.log(`🎯 Detected intent: ${intent}`);
 
-                // Choose Response Strategy
-                if (intent === aiService.intents.PERSONAL_UNRELATED) {
-                    console.log(`⏭️  Intent is PERSONAL_UNRELATED, skipping AI reply.`);
-                    return;
-                }
+                // 2. AI RESPONSE GENERATION
+                let shouldScheduleReview = false;
+                if (tenant.skipAI) {
+                    console.log(`⏹️  AI conversation disabled for ${tenant.name} per owner request. Skipping reply.`);
+                } else {
+                    // Choose Response Strategy
+                    if (intent === aiService.intents.PERSONAL_UNRELATED) {
+                        console.log(`⏭️  Intent is PERSONAL_UNRELATED, skipping AI reply.`);
+                        return;
+                    }
 
-                // Generate AI response 
-                console.log(`🤔 Generating AI response for ${tenant.name} (${intent})...`);
-                const aiResponse = await aiService.generateResponse(tenant, history, finalImageData, intent);
+                    // Generate AI response 
+                    console.log(`🤔 Generating AI response for ${tenant.name} (${intent})...`);
+                    const aiResponse = await aiService.generateResponse(tenant, history, finalImageData, intent);
 
-                // Add AI response to conversation history
-                await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
+                    // Add AI response to conversation history
+                    await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
 
-                // ─── AI TRIGGERS ───
-                const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
-                const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
-                const reviewTagRegex = /[\*\[]+SCHEDULE_REVIEW[\*\]]+/i;
+                    // ─── AI TRIGGERS ───
+                    const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
+                    const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
+                    const reviewTagRegex = /[\*\[]+SCHEDULE_REVIEW[\*\]]+/i;
 
-                const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
-                const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
-                const shouldScheduleReview = reviewTagRegex.test(aiResponse);
+                    const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
+                    const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
+                    shouldScheduleReview = reviewTagRegex.test(aiResponse);
 
-                // Remove tags from the response before sending
-                const cleanedResponse = aiResponse
-                    .replace(new RegExp(qrTagRegex, 'gi'), '')
-                    .replace(new RegExp(leadTagRegex, 'gi'), '')
-                    .replace(new RegExp(reviewTagRegex, 'gi'), '')
-                    .trim();
+                    // Remove tags from the response before sending
+                    const cleanedResponse = aiResponse
+                        .replace(new RegExp(qrTagRegex, 'gi'), '')
+                        .replace(new RegExp(leadTagRegex, 'gi'), '')
+                        .replace(new RegExp(reviewTagRegex, 'gi'), '')
+                        .trim();
 
-                // Send reply back through Evolution API
-                let voiceSent = false;
-                if (finalAudioMsg && ttsService.isAvailable()) {
-                    try {
-                        console.log('🔊 Generating voice reply via Edge TTS...');
-                        const audioBase64 = await ttsService.textToSpeech(cleanedResponse);
-                        if (audioBase64) {
-                            await evolutionService.sendAudio(tenant.instanceName, senderNumber, audioBase64);
-                            voiceSent = true;
-                            console.log('🔊 Voice reply sent successfully');
+                    // Send reply back through Evolution API
+                    let voiceSent = false;
+                    if (finalAudioMsg && ttsService.isAvailable()) {
+                        try {
+                            console.log('🔊 Generating voice reply via Edge TTS...');
+                            const audioBase64 = await ttsService.textToSpeech(cleanedResponse);
+                            if (audioBase64) {
+                                await evolutionService.sendAudio(tenant.instanceName, senderNumber, audioBase64);
+                                voiceSent = true;
+                                console.log('🔊 Voice reply sent successfully');
+                            }
+                        } catch (ttsError) {
+                            console.error('⚠️  Voice reply failed, falling back to text:', ttsError.message);
                         }
-                    } catch (ttsError) {
-                        console.error('⚠️  Voice reply failed, falling back to text:', ttsError.message);
+                    }
+
+                    if (!voiceSent && typeof cleanedResponse === 'string' && cleanedResponse.trim().length > 0) {
+                        console.log(`[DEBUG] AI sending text [${cleanedResponse.length} chars]: ${JSON.stringify(cleanedResponse)}`);
+                        await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
+                    } else if (!voiceSent) {
+                        console.log(`⏭️ AI response was empty (likely only tags). Content was: ${JSON.stringify(cleanedResponse)}`);
+                    }
+
+                    // If AI triggered a QR
+                    if (shouldSendQr) {
+                        console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
+                        let qrBase64 = await paymentService.getStaticQr(tenant.id);
+                        if (!qrBase64) {
+                            qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
+                        }
+                        if (qrBase64) {
+                            await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
+                                `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app.`
+                            );
+                        }
+                    }
+
+                    // If AI triggered a Lead Summary
+                    if (shouldSendLeadSummary && tenant.ownerPhone) {
+                        console.log(`📋 AI triggered Lead Summary for ${senderNumber}`);
+                        const recentMsgs = history.slice(-6).map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`).join('\n\n');
+                        const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
+                        await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
                     }
                 }
 
-                if (!voiceSent && typeof cleanedResponse === 'string' && cleanedResponse.trim().length > 0) {
-                    console.log(`[DEBUG] AI sending text [${cleanedResponse.length} chars]: ${JSON.stringify(cleanedResponse)}`);
-                    await evolutionService.sendText(tenant.instanceName, senderNumber, cleanedResponse);
-                } else if (!voiceSent) {
-                    console.log(`⏭️ AI response was empty (likely only tags). Content was: ${JSON.stringify(cleanedResponse)}`);
-                }
-
-                // If AI triggered a QR
-                if (shouldSendQr) {
-                    console.log(`💳 AI triggered UPI QR for ${senderNumber} on ${tenant.name}`);
-                    let qrBase64 = await paymentService.getStaticQr(tenant.id);
-                    if (!qrBase64) {
-                        qrBase64 = await paymentService.generateUpiQr(tenant.upiId, tenant.upiName || tenant.name);
-                    }
-                    if (qrBase64) {
-                        await evolutionService.sendImage(tenant.instanceName, senderNumber, qrBase64,
-                            `💳 *Pay ${tenant.upiName || tenant.name}*\n\nScan this QR code with any UPI app.`
-                        );
-                    }
-                }
-
-                // If AI triggered a Lead Summary
-                if (shouldSendLeadSummary && tenant.ownerPhone) {
-                    console.log(`📋 AI triggered Lead Summary for ${senderNumber}`);
-                    const recentMsgs = history.slice(-6).map(m => `${m.role === 'assistant' ? 'AI' : 'Customer'}: ${m.content}`).join('\n\n');
-                    const summaryMessage = `🔔 *New Lead Collected!* — ${tenant.name}\n\n📞 Customer Phone: ${senderNumber}\n👤 Customer Name: ${pushName}\n\n*Recent context:*\n${recentMsgs}\n\n_Reply with #ai off to take over this chat manually._`;
-                    await evolutionService.sendText(tenant.instanceName, tenant.ownerPhone, summaryMessage);
-                }
+                // ─── 3. POST-AI LOGIC (Runs even if AI response was skipped) ─────
 
                 // ─── REVIEW TRIGGER: Code-level closure detection ─────────────
                 // We don't rely on the AI to append [SCHEDULE_REVIEW] — LLMs
