@@ -144,7 +144,7 @@ class DatabaseService {
             return await this.pool.query(text, params);
         } catch (error) {
             console.error('❌ DB query error:', error.message);
-            return null;
+            throw error;
         }
     }
 
