@@ -1,11 +1,15 @@
 const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');
 
 // We use the same frontend anon key for verification. 
 // Supabase's `getUser` securely verifies the token against the Supabase Auth server.
 const supabaseUrl = process.env.SUPABASE_URL || 'https://sslmozbifqqooeviombu.supabase.co';
 const supabaseKey = process.env.SUPABASE_KEY || 'sb_publishable_Cnou-hz3mTSOt6EBI7LHiA_VVoRfpV0';
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: { persistSession: false, detectSessionInUrl: false },
+    global: { WebSocket }
+});
 
 const requireAuth = async (req, res, next) => {
     try {
