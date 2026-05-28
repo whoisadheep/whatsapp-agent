@@ -140,7 +140,13 @@ class DatabaseService {
     }
 
     async query(text, params) {
-        if (!this.connected) return null;
+        if (!this.connected) {
+            console.log('🔄 Database disconnected. Attempting to reconnect...');
+            await this.connect();
+            if (!this.connected) {
+                throw new Error('Database is not connected (reconnection failed)');
+            }
+        }
         try {
             return await this.pool.query(text, params);
         } catch (error) {
