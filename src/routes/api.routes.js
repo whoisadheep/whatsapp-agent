@@ -242,6 +242,12 @@ router.delete('/tenants/:id', requireAuth, async (req, res) => {
         await db.query('DELETE FROM messages WHERE tenant_id = $1', [tenantId]);
         await db.query('DELETE FROM takeover_state WHERE tenant_id = $1', [tenantId]);
         await db.query('DELETE FROM customers WHERE tenant_id = $1', [tenantId]);
+        await db.query('DELETE FROM products WHERE tenant_id = $1', [tenantId]);
+        await db.query('DELETE FROM leads WHERE tenant_id = $1', [tenantId]);
+        await db.query('DELETE FROM review_requests WHERE tenant_id = $1', [tenantId]);
+        await db.query('DELETE FROM coach_briefings WHERE tenant_id = $1', [tenantId]);
+        await db.query('DELETE FROM broadcast_jobs WHERE tenant_id = $1', [tenantId]);
+        await db.query('DELETE FROM broadcast_optouts WHERE tenant_id = $1', [tenantId]);
         
         // Delete the tenant
         const result = await db.query('DELETE FROM tenants WHERE id = $1 RETURNING *', [tenantId]);
