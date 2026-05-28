@@ -14,33 +14,7 @@ class TenantService {
     async loadFromDb() {
         if (!db.isConnected()) return;
         try {
-            // First, ensure hardcoded config tenants are in the DB (seeding)
-            for (const key of Object.keys(tenantsConfig)) {
-                const t = tenantsConfig[key];
-                const exists = await db.query('SELECT id FROM tenants WHERE id = $1', [t.id]);
-                if (!exists || exists.rows.length === 0) {
-                    await db.query(
-                        `INSERT INTO tenants 
-                        (id, name, instance_name, system_prompt, ignored_numbers, allowed_groups, takeover_timeout_ms, upi_id, upi_name, review_link, owner_phone, skip_ai) 
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-                        [
-                            t.id, 
-                            t.name, 
-                            t.instanceName, 
-                            t.systemPrompt, 
-                            (t.ignoredNumbers || []).join(','), 
-                            (t.allowedGroups || []).join(','), 
-                            t.takeoverTimeoutMs, 
-                            t.upiId || null, 
-                            t.upiName || null, 
-                            t.reviewLink || null, 
-                            t.ownerPhone || null, 
-                            t.skipAI ? true : false
-                        ]
-                    );
-                    console.log(`🌱 Seeded tenant: ${t.name} into database`);
-                }
-            }
+
 
             // Now load all from DB into memory cache
             const result = await db.query('SELECT * FROM tenants WHERE is_active = true OR is_active IS NULL');
