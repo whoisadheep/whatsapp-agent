@@ -45,6 +45,16 @@ router.post('/', async (req, res) => {
             console.error(`❌ Tenant "${targetTenantId}" not found`);
             return res.status(400).json({ error: `Tenant "${targetTenantId}" not found. Valid: ${tenants.map(t => t.id).join(', ')}` });
         }
+        
+        // Check subscription tier
+        const db = require('../services/db.service');
+        if (tenant.user_id) {
+            const user = await db.getUser(tenant.user_id);
+            if (user && user.subscription_tier === 'ai' && user.subscription_status !== 'trialing') {
+                console.warn(`🚫 Missed call webhook: Tenant ${tenant.id} is on AI-only plan`);
+                return res.status(403).json({ error: 'Upgrade to Ringl or Combo plan to use this feature' });
+            }
+        }
 
         console.log(`\n📞 MISSED CALL from: ${normalizedPhone} → ${tenant.name} at ${new Date(timestamp).toLocaleString()}`);
 

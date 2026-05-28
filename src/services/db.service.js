@@ -27,6 +27,7 @@ class DatabaseService {
             try {
                 await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)');
                 await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE');
+                await this.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_tier VARCHAR(50) DEFAULT 'combo'");
             } catch (err) {
                 console.log('Error adding columns to existing tables:', err.message);
             }
@@ -48,6 +49,7 @@ class DatabaseService {
             `CREATE TABLE IF NOT EXISTS users (
                 id VARCHAR(255) PRIMARY KEY,
                 subscription_status VARCHAR(50) DEFAULT 'trialing',
+                subscription_tier VARCHAR(50) DEFAULT 'combo',
                 trial_ends_at TIMESTAMP,
                 razorpay_subscription_id VARCHAR(255),
                 razorpay_customer_id VARCHAR(255),
@@ -203,6 +205,17 @@ class DatabaseService {
             return res.rows[0];
         } catch (error) {
             console.error('Error updating user subscription:', error);
+            return null;
+        }
+    }
+
+    async getUser(userId) {
+        if (!this.connected) return null;
+        try {
+            const result = await this.pool.query('SELECT id, subscription_status, subscription_tier, trial_ends_at, razorpay_subscription_id, razorpay_customer_id, created_at FROM users WHERE id = $1', [userId]);
+            return result.rows[0];
+        } catch (error) {
+            console.error('❌ Failed to get user:', error.message);
             return null;
         }
     }

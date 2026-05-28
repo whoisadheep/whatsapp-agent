@@ -128,16 +128,22 @@ router.post('/', async (req, res) => {
 
         // ─── CHECK SUBSCRIPTION STATUS ───
         if (tenant.user_id) {
-            const userSub = await db.getUserSubscription(tenant.user_id);
+            const userSub = await db.getUser(tenant.user_id);
             if (userSub) {
                 const now = new Date();
                 const trialEnds = new Date(userSub.trial_ends_at);
                 const isTrialExpired = trialEnds < now;
                 const isActive = userSub.subscription_status === 'active';
+                const tier = userSub.subscription_tier || 'combo';
                 
                 if (!isActive && isTrialExpired) {
                     console.log(`🚫 Webhook ignored: Subscription for user ${tenant.user_id} is expired.`);
                     return res.status(200).json({ status: 'ignored', reason: 'subscription_expired' });
+                }
+
+                if (tier === 'ringl' && isTrialExpired) {
+                    console.log(`🚫 Webhook ignored: Tenant ${tenant.id} is on Ringl-only plan.`);
+                    return res.status(200).json({ status: 'ignored', reason: 'tier_not_supported' });
                 }
             }
         }
