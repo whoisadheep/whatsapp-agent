@@ -50,6 +50,7 @@ app.get('/', (req, res) => {
 // Temporary debug endpoint
 app.get('/debug', async (req, res) => {
     const { Pool } = require('pg');
+    require('dns').setDefaultResultOrder('ipv4first');
     const dbUrl = process.env.DATABASE_URL || '(not set)';
     const masked = dbUrl.length > 20 ? dbUrl.substring(0, 20) + '...' + dbUrl.substring(dbUrl.length - 15) : dbUrl;
     let freshTest = 'not tested';
