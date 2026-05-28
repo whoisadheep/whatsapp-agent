@@ -15,6 +15,7 @@ class DatabaseService {
             max: 10,
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 5000,
+            ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : false,
         });
 
         // Test connection
