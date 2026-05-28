@@ -17,7 +17,7 @@ router.get('/tenants', requireAuth, async (req, res) => {
         res.json(result.rows);
     } catch (error) {
         console.error('Error fetching tenants:', error);
-        res.status(500).json({ error: 'Failed to fetch tenants' });
+        res.status(500).json({ error: 'Failed to fetch tenants', details: error.message });
     }
 });
 
