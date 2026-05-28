@@ -27,6 +27,7 @@ app.use('/health', healthRoutes);
 app.use('/api/integration', require('./routes/integration.routes'));
 app.use('/api/coach', require('./routes/coach.routes'));
 app.use('/api/missed-call', require('./routes/missedcall.routes'));
+app.use('/api', require('./routes/api.routes')); // ← NEW: Dashboard API Routes
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -52,8 +53,9 @@ async function initializeTenants() {
     if (db.isConnected()) {
         await takeoverService.loadFromDb();
         await reviewService.init();
-        await businessCoachService.init();   // ← NEW
-        await broadcastService.ensureTables();  // ← NEW
+        await businessCoachService.init();
+        await broadcastService.ensureTables();
+        await tenantService.loadFromDb(); // ← NEW: Load tenants from DB
     }
 
     const tenants = tenantService.getAllTenants();

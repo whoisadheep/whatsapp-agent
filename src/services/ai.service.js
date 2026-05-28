@@ -1,6 +1,7 @@
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const productService = require('./product.service');
+const db = require('./db.service');
 
 class AIService {
     constructor() {
@@ -78,6 +79,20 @@ class AIService {
             return 'You are a helpful business assistant.';
         }
         const catalogText = (intent === this.intents.BUSINESS_INQUIRY) ? await productService.getCatalogText(tenant.id) : '';
+
+        let knowledgeText = '';
+        try {
+            const result = await db.query('SELECT filename, content FROM knowledge_documents WHERE tenant_id = $1', [tenant.id]);
+            if (result.rows.length > 0) {
+                knowledgeText = `\n---\n[KNOWLEDGE BASE START]\n`;
+                for (const row of result.rows) {
+                    knowledgeText += `\n--- Document: ${row.filename} ---\n${row.content}\n`;
+                }
+                knowledgeText += `\n[KNOWLEDGE BASE END]\nYou MUST use the knowledge base above to answer the user's questions accurately. If the answer is not in the knowledge base, say you don't know and offer human assistance.\n---\n`;
+            }
+        } catch (err) {
+            console.error('Error fetching knowledge base:', err);
+        }
 
         const INTENT_GUIDANCE = intent ? `
 ---
@@ -164,7 +179,7 @@ CONVERSATION CONTINUITY:
 ---
 `;
 
-        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES + CONVERSATION_FLOW_RULES;
+        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + knowledgeText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES + CONVERSATION_FLOW_RULES;
     }
 
     /**

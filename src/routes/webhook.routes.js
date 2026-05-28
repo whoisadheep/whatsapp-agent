@@ -751,17 +751,41 @@ router.post('/', async (req, res) => {
                     const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
                     const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
                     const reviewTagRegex = /[\*\[]+SCHEDULE_REVIEW[\*\]]+/i;
+                    const handoffTagRegex = /[\*\[]+HANDOFF[\*\]]+/i;
+                    const silenceTagRegex = /[\*\[]+SILENCE[\*\]]+/i;
 
                     const shouldSendQr = qrTagRegex.test(aiResponse) && tenant.upiId;
                     const shouldSendLeadSummary = leadTagRegex.test(aiResponse);
                     shouldScheduleReview = reviewTagRegex.test(aiResponse);
+                    const shouldHandoff = handoffTagRegex.test(aiResponse);
+                    const shouldSilence = silenceTagRegex.test(aiResponse);
 
                     // Remove tags from the response before sending
                     const cleanedResponse = aiResponse
                         .replace(new RegExp(qrTagRegex, 'gi'), '')
                         .replace(new RegExp(leadTagRegex, 'gi'), '')
                         .replace(new RegExp(reviewTagRegex, 'gi'), '')
+                        .replace(new RegExp(handoffTagRegex, 'gi'), '')
+                        .replace(new RegExp(silenceTagRegex, 'gi'), '')
                         .trim();
+
+                    // Trigger Handoff (requires owner attention)
+                    if (shouldHandoff) {
+                        console.log(`🤝 AI triggered [HANDOFF] for ${senderNumber} on ${tenant.name}. Pausing AI.`);
+                        takeoverService.pause(tenant, senderNumber, null); // pause indefinitely
+                        
+                        // Notify owner
+                        if (tenant.ownerPhone) {
+                            const ownerAlert = `🚨 *AI Handoff Requested*\n\n📞 From: ${finalPushName} (${senderNumber})\n💬 Last customer msg: "${batchedText.slice(0, 100)}"\n\nThe AI has told them you will reply. AI is now paused for this contact.`;
+                            evolutionService.sendText(tenant.instanceName, tenant.ownerPhone.replace(/\D/g, ''), ownerAlert).catch(() => {});
+                        }
+                    }
+
+                    // Trigger Silence (drop message, do not pause AI)
+                    if (shouldSilence || (!shouldHandoff && cleanedResponse.length === 0)) {
+                        console.log(`🔇 AI triggered [SILENCE] or empty response for ${senderNumber}. Dropping message to avoid polite loops.`);
+                        return; // Stop execution here, do not send anything.
+                    }
 
                     // Send reply back through Evolution API
                     let voiceSent = false;

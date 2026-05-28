@@ -22,7 +22,14 @@ class DatabaseService {
             const client = await this.pool.connect();
             client.release();
             this.connected = true;
-            console.log('🗄️  Database connected successfully');
+            // Add user_id to existing tables if it doesn't exist
+            try {
+                await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)');
+            } catch (err) {
+                console.log('user_id column already exists or error:', err.message);
+            }
+
+            console.log('✅ Database connected successfully');
         } catch (error) {
             console.error('❌ Database connection failed:', error.message);
             console.log('   The agent will work without persistence (in-memory only)');
@@ -36,6 +43,23 @@ class DatabaseService {
 
     async createTables() {
         const queries = [
+            `CREATE TABLE IF NOT EXISTS tenants (
+                id VARCHAR(50) PRIMARY KEY,
+                user_id VARCHAR(255),
+                name VARCHAR(255) NOT NULL,
+                instance_name VARCHAR(255) NOT NULL,
+                system_prompt TEXT,
+                ignored_numbers TEXT,
+                allowed_groups TEXT,
+                takeover_timeout_ms INTEGER,
+                upi_id VARCHAR(255),
+                upi_name VARCHAR(255),
+                review_link TEXT,
+                owner_phone VARCHAR(20),
+                skip_ai BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )`,
             `CREATE TABLE IF NOT EXISTS customers (
                 tenant_id VARCHAR(50) NOT NULL,
                 phone VARCHAR(20) NOT NULL,
