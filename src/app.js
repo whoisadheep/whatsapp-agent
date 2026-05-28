@@ -47,6 +47,20 @@ app.get('/', (req, res) => {
     });
 });
 
+// Temporary debug endpoint
+app.get('/debug', async (req, res) => {
+    const dbUrl = process.env.DATABASE_URL || '(not set)';
+    const masked = dbUrl.length > 20 ? dbUrl.substring(0, 20) + '...' + dbUrl.substring(dbUrl.length - 15) : dbUrl;
+    let dbTest = 'not tested';
+    try {
+        const result = await db.query('SELECT 1 as ok');
+        dbTest = result ? 'connected' : 'query returned null (this.connected=' + db.isConnected() + ')';
+    } catch(e) {
+        dbTest = 'error: ' + e.message;
+    }
+    res.json({ db_connected: db.isConnected(), db_url_masked: masked, db_test: dbTest });
+});
+
 async function initializeTenants() {
     console.log('\n🔄 Initializing Database...');
     await db.connect();
