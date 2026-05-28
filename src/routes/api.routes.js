@@ -14,7 +14,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 router.get('/tenants', requireAuth, async (req, res) => {
     try {
         const result = await db.query('SELECT * FROM tenants WHERE user_id = $1 ORDER BY created_at DESC', [req.user.id]);
-        res.json(result.rows);
+        res.json(result ? result.rows : []);
     } catch (error) {
         console.error('Error fetching tenants:', error);
         res.status(500).json({ error: 'Failed to fetch tenants', details: error.message });
