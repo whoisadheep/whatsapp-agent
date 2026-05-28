@@ -148,6 +148,11 @@ router.post('/', async (req, res) => {
             }
         }
 
+        // ─── CHECK FEATURE TOGGLES ───
+        // We still process owner commands even if AI is disabled, but we should block customer messages.
+        // Wait, if AI is disabled, should we block all webhooks?
+        // Let's check below in the customer processing block, but checking here is fine for now, we'll let owner commands through.
+
         const remoteJid = data.key?.remoteJid || '';
         const senderNumber = remoteJid.replace('@s.whatsapp.net', '').replace('@g.us', '');
 
@@ -604,6 +609,12 @@ router.post('/', async (req, res) => {
         if (takeoverService.isPaused(tenant.id, senderNumber)) {
             console.log(`⏸️  AI is paused for ${senderNumber} on ${tenant.name} (human takeover active — ${takeoverService.getRemainingTime(tenant.id, senderNumber)})`);
             return res.status(200).json({ status: 'paused', reason: 'human takeover active' });
+        }
+
+        // ─── AI TOGGLE: Check if AI is explicitly disabled for this tenant ───
+        if (tenant.ai_enabled === false) {
+            console.log(`⏭️  AI is disabled for tenant ${tenant.name}, ignoring customer message`);
+            return res.status(200).json({ status: 'ignored', reason: 'ai disabled' });
         }
 
         const mediaTag = audioMessage ? 'VOICE' : (imageMessage ? 'IMAGE' : '');

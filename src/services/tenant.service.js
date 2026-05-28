@@ -33,7 +33,9 @@ class TenantService {
                         upiName: row.upi_name,
                         reviewLink: row.review_link,
                         ownerPhone: row.owner_phone,
-                        skipAI: row.skip_ai
+                        skipAI: row.skip_ai,
+                        ai_enabled: row.ai_enabled !== false,
+                        ringl_enabled: row.ringl_enabled !== false
                     };
                 }
                 this.tenants = dbTenants;

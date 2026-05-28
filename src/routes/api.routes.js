@@ -191,7 +191,8 @@ router.put('/tenants/:id', requireAuth, async (req, res) => {
     try {
         const { 
             name, instance_name, system_prompt, ignored_numbers, 
-            allowed_groups, takeover_timeout_ms, owner_phone 
+            allowed_groups, takeover_timeout_ms, owner_phone,
+            ai_enabled, ringl_enabled
         } = req.body;
 
         const result = await db.query(
@@ -199,8 +200,9 @@ router.put('/tenants/:id', requireAuth, async (req, res) => {
              SET name = $1, instance_name = $2, system_prompt = $3, 
                  ignored_numbers = $4, allowed_groups = $5, 
                  takeover_timeout_ms = $6, owner_phone = $7,
+                 ai_enabled = COALESCE($8, true), ringl_enabled = COALESCE($9, true),
                  updated_at = NOW()
-             WHERE id = $8 AND user_id = $9 RETURNING *`,
+             WHERE id = $10 AND user_id = $11 RETURNING *`,
             [
                 name, 
                 instance_name, 
@@ -209,6 +211,8 @@ router.put('/tenants/:id', requireAuth, async (req, res) => {
                 allowed_groups, 
                 takeover_timeout_ms, 
                 owner_phone, 
+                ai_enabled,
+                ringl_enabled,
                 req.params.id,
                 req.user.id
             ]

@@ -27,6 +27,8 @@ class DatabaseService {
             try {
                 await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)');
                 await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE');
+                await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN DEFAULT TRUE');
+                await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ringl_enabled BOOLEAN DEFAULT TRUE');
                 await this.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_tier VARCHAR(50) DEFAULT 'combo'");
             } catch (err) {
                 console.log('Error adding columns to existing tables:', err.message);
@@ -70,6 +72,8 @@ class DatabaseService {
                 owner_phone VARCHAR(20),
                 skip_ai BOOLEAN DEFAULT FALSE,
                 is_active BOOLEAN DEFAULT TRUE,
+                ai_enabled BOOLEAN DEFAULT TRUE,
+                ringl_enabled BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             )`,

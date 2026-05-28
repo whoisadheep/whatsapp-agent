@@ -46,6 +46,12 @@ router.post('/', async (req, res) => {
             return res.status(400).json({ error: `Tenant "${targetTenantId}" not found. Valid: ${tenants.map(t => t.id).join(', ')}` });
         }
         
+        // Check feature toggles
+        if (tenant.ringl_enabled === false) {
+            console.log(`⏭️ Ringl Auto-Reply disabled for tenant ${tenant.name}, ignoring missed call`);
+            return res.status(200).json({ status: 'ignored', reason: 'ringl disabled' });
+        }
+        
         // Check subscription tier
         const db = require('../services/db.service');
         if (tenant.user_id) {
