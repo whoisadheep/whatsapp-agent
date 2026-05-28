@@ -11,6 +11,7 @@ const transcriptionService = require('../services/transcription.service');
 const reviewService = require('../services/review.service');
 const ttsService = require('../services/tts.service');
 const broadcastService = require('../services/broadcast.service'); // ← NEW
+const db = require('../services/db.service');
 
 const router = express.Router();
 
@@ -123,6 +124,22 @@ router.post('/', async (req, res) => {
         if (!tenant) {
             console.log(`⚠️  Webhook received for unknown instance: ${instanceName}, ignoring`);
             return res.status(200).json({ status: 'ignored', reason: 'unknown tenant' });
+        }
+
+        // ─── CHECK SUBSCRIPTION STATUS ───
+        if (tenant.user_id) {
+            const userSub = await db.getUserSubscription(tenant.user_id);
+            if (userSub) {
+                const now = new Date();
+                const trialEnds = new Date(userSub.trial_ends_at);
+                const isTrialExpired = trialEnds < now;
+                const isActive = userSub.subscription_status === 'active';
+                
+                if (!isActive && isTrialExpired) {
+                    console.log(`🚫 Webhook ignored: Subscription for user ${tenant.user_id} is expired.`);
+                    return res.status(200).json({ status: 'ignored', reason: 'subscription_expired' });
+                }
+            }
         }
 
         const remoteJid = data.key?.remoteJid || '';

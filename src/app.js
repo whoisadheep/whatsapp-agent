@@ -28,6 +28,7 @@ app.use('/api/integration', require('./routes/integration.routes'));
 app.use('/api/coach', require('./routes/coach.routes'));
 app.use('/api/missed-call', require('./routes/missedcall.routes'));
 app.use('/api', require('./routes/api.routes')); // ← NEW: Dashboard API Routes
+app.use('/api/payments', require('./routes/payment.routes')); // Razorpay
 
 // Root endpoint
 app.get('/', (req, res) => {

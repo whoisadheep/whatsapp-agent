@@ -43,6 +43,14 @@ class DatabaseService {
 
     async createTables() {
         const queries = [
+            `CREATE TABLE IF NOT EXISTS users (
+                id VARCHAR(255) PRIMARY KEY,
+                subscription_status VARCHAR(50) DEFAULT 'trialing',
+                trial_ends_at TIMESTAMP,
+                razorpay_subscription_id VARCHAR(255),
+                razorpay_customer_id VARCHAR(255),
+                created_at TIMESTAMP DEFAULT NOW()
+            )`,
             `CREATE TABLE IF NOT EXISTS tenants (
                 id VARCHAR(50) PRIMARY KEY,
                 user_id VARCHAR(255),
@@ -142,6 +150,52 @@ class DatabaseService {
 
     isConnected() {
         return this.connected;
+    }
+
+    async getUserSubscription(userId) {
+        if (!this.connected) return null;
+        try {
+            const res = await this.pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+            if (res.rows.length === 0) {
+                // Auto-create user with 3-day trial if they don't exist
+                const trialEndsAt = new Date();
+                trialEndsAt.setDate(trialEndsAt.getDate() + 3);
+                const insertRes = await this.pool.query(
+                    'INSERT INTO users (id, trial_ends_at) VALUES ($1, $2) RETURNING *',
+                    [userId, trialEndsAt]
+                );
+                return insertRes.rows[0];
+            }
+            return res.rows[0];
+        } catch (error) {
+            console.error('Error fetching user subscription:', error);
+            return null;
+        }
+    }
+
+    async updateUserSubscription(userId, updates) {
+        if (!this.connected) return null;
+        try {
+            const keys = Object.keys(updates);
+            const values = Object.values(updates);
+            
+            if (keys.length === 0) return null;
+
+            const setClause = keys.map((key, index) => `${key} = $${index + 2}`).join(', ');
+            
+            const query = `
+                UPDATE users 
+                SET ${setClause}
+                WHERE id = $1
+                RETURNING *
+            `;
+            
+            const res = await this.pool.query(query, [userId, ...values]);
+            return res.rows[0];
+        } catch (error) {
+            console.error('Error updating user subscription:', error);
+            return null;
+        }
     }
 }
 
