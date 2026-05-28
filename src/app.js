@@ -49,16 +49,25 @@ app.get('/', (req, res) => {
 
 // Temporary debug endpoint
 app.get('/debug', async (req, res) => {
+    const { Pool } = require('pg');
     const dbUrl = process.env.DATABASE_URL || '(not set)';
     const masked = dbUrl.length > 20 ? dbUrl.substring(0, 20) + '...' + dbUrl.substring(dbUrl.length - 15) : dbUrl;
-    let dbTest = 'not tested';
+    let freshTest = 'not tested';
     try {
-        const result = await db.query('SELECT 1 as ok');
-        dbTest = result ? 'connected' : 'query returned null (this.connected=' + db.isConnected() + ')';
+        const testPool = new Pool({
+            connectionString: dbUrl,
+            ssl: { rejectUnauthorized: false },
+            connectionTimeoutMillis: 5000,
+        });
+        const client = await testPool.connect();
+        const r = await client.query('SELECT 1 as ok');
+        client.release();
+        await testPool.end();
+        freshTest = 'SUCCESS: ' + JSON.stringify(r.rows);
     } catch(e) {
-        dbTest = 'error: ' + e.message;
+        freshTest = 'FAIL: ' + e.message;
     }
-    res.json({ db_connected: db.isConnected(), db_url_masked: masked, db_test: dbTest });
+    res.json({ db_connected: db.isConnected(), db_url_masked: masked, fresh_connection_test: freshTest });
 });
 
 async function initializeTenants() {
