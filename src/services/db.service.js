@@ -23,11 +23,12 @@ class DatabaseService {
             const client = await this.pool.connect();
             client.release();
             this.connected = true;
-            // Add user_id to existing tables if it doesn't exist
+            // Add columns to existing tables if they don't exist
             try {
                 await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)');
+                await this.pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE');
             } catch (err) {
-                console.log('user_id column already exists or error:', err.message);
+                console.log('Error adding columns to existing tables:', err.message);
             }
 
             console.log('✅ Database connected successfully');
@@ -66,6 +67,7 @@ class DatabaseService {
                 review_link TEXT,
                 owner_phone VARCHAR(20),
                 skip_ai BOOLEAN DEFAULT FALSE,
+                is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             )`,
