@@ -662,8 +662,20 @@ YOUR TASK — Think step by step:
 
 1. ANALYZE: Read the customer's last message in the conversation history. What did they actually ask or say?
 
-2. CHECK FOR PROBLEMS — Look for ALL of these:
-   - Did the AI invent or fabricate information? (e.g., confirming payments, promising delivery, making up prices, inventing the owner's name)
+2. THE GOLDEN RULE (MOST IMPORTANT):
+   The AI is a receptionist. It can ONLY say things that are EXPLICITLY written in the System Prompt above.
+   If the AI states ANY fact, policy, price, capability, process, person's name, or promise that is NOT explicitly written in the System Prompt — it is HALLUCINATING, even if it sounds reasonable.
+   
+   Examples of hallucination even when no rule is broken:
+   - System prompt doesn't mention warranty → AI says "2 saal ki warranty milegi" → HALLUCINATION
+   - System prompt doesn't mention delivery → AI says "2 din mein deliver ho jayega" → HALLUCINATION
+   - System prompt doesn't mention owner's name → AI says "Ranjan sir ko bata diya" → HALLUCINATION
+   - System prompt doesn't mention return policy → AI says "7 din mein return kar sakte hain" → HALLUCINATION
+   - System prompt doesn't mention a product → AI says "haan ye humara bestseller hai" → HALLUCINATION
+   
+   When in doubt: if it's not written in the system prompt, the AI should NOT say it. It should politely tell the customer it is notifying the owner and add [HANDOFF].
+
+3. ALSO CHECK FOR THESE PROBLEMS:
    - Did the AI claim to have capabilities it doesn't have? (e.g., "I'm forwarding your message", "I've checked your order")
    - Did the AI violate the SILENCE rule? (replying to "ok", "thanks", "👍" when no new question was asked)
    - Did the AI push a sales pitch when it shouldn't? (e.g., after a religious image or greeting)
@@ -671,12 +683,12 @@ YOUR TASK — Think step by step:
    - Did the AI repeat itself or give a robotic canned response?
    - Is the tone wrong for the situation? (e.g., too formal when customer is frustrated, or too casual for a complaint)
 
-3. VERDICT — Reply in ONE of these two formats:
+4. VERDICT — Reply in ONE of these two formats:
 
-FORMAT A — If the response is fine:
+FORMAT A — If the response ONLY contains information from the System Prompt and follows all rules:
 SAFE
 
-FORMAT B — If ANY problem is found:
+FORMAT B — If ANY problem is found (hallucination, tone, rule violation, or unauthorized information):
 CORRECTED_RESPONSE: <Write the CORRECT response the AI should have sent instead. Keep it natural, short, in Hinglish, and following all the rules. Include [HANDOFF] or [SILENCE] tags if needed.>
 PROBLEM: <One-line explanation of what was wrong>
 RULE: <Write ONE new concise rule starting with "NEVER" to prevent this mistake in the future>
