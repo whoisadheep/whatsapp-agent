@@ -35,7 +35,9 @@ class TenantService {
                         ownerPhone: row.owner_phone,
                         skipAI: row.skip_ai,
                         ai_enabled: row.ai_enabled !== false,
-                        ringl_enabled: row.ringl_enabled !== false
+                        ringl_enabled: row.ringl_enabled !== false,
+                        guardrail_enabled: row.guardrail_enabled === true,
+                        learned_rules: row.learned_rules || ''
                     };
                 }
                 this.tenants = dbTenants;

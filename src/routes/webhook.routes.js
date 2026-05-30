@@ -776,7 +776,32 @@ router.post('/', async (req, res) => {
 
                     // Generate AI response 
                     console.log(`🤔 Generating AI response for ${tenant.name} (${intent})...`);
-                    const aiResponse = await aiService.generateResponse(tenant, history, finalImageData, intent);
+                    let aiResponse = await aiService.generateResponse(tenant, history, finalImageData, intent);
+
+                    // ─── GUARDRAIL & SELF-HEALING ───
+                    if (tenant.guardrail_enabled) {
+                        console.log(`🛡️ Guardrail is enabled for ${tenant.name}. Verifying response...`);
+                        const guardrailCheck = await aiService.verifyResponse(tenant, history, aiResponse);
+                        if (!guardrailCheck.isSafe) {
+                            console.warn(`🚨 Guardrail caught a hallucination! Reason: ${guardrailCheck.reason}`);
+                            aiResponse = "Main thoda samajh nahi paaya. Main owner ko aapka message forward kar raha hoon, wo jaldi hi reply karenge. [HANDOFF]";
+                            
+                            // Self-Healing: Learn the new rule
+                            if (guardrailCheck.newRule) {
+                                console.log(`🧠 Guardrail learned a new rule: ${guardrailCheck.newRule}`);
+                                const newLearnedRules = (tenant.learned_rules ? tenant.learned_rules + '\n' : '') + '- ' + guardrailCheck.newRule;
+                                
+                                // Update DB and memory asynchronously
+                                const db = require('../services/db.service');
+                                const tenantService = require('../services/tenant.service');
+                                db.query('UPDATE tenants SET learned_rules = $1 WHERE id = $2', [newLearnedRules, tenant.id])
+                                    .then(() => tenantService.loadFromDb())
+                                    .catch(err => console.error('Failed to save learned rule:', err));
+                            }
+                        } else {
+                            console.log(`✅ Guardrail passed. Response is safe.`);
+                        }
+                    }
 
                     // Add AI response to conversation history
                     await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);

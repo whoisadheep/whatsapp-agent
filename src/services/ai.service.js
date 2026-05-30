@@ -179,7 +179,16 @@ CONVERSATION CONTINUITY:
 ---
 `;
 
-        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + knowledgeText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES + CONVERSATION_FLOW_RULES;
+        // ─── FIX 5: Self-Healing Learned Rules ───
+        const LEARNED_RULES = tenant.learned_rules ? `
+---
+LEARNED CONSTRAINTS (CRITICAL):
+The following rules were automatically learned from past mistakes. You MUST follow them strictly:
+${tenant.learned_rules}
+---
+` : '';
+
+        return INTENT_GUIDANCE + tenant.systemPrompt + catalogText + knowledgeText + CHANNEL_FORMATTING_RULES + REVIEW_TRIGGER_RULES + IMAGE_HANDLING_RULES + SOCIAL_MESSAGE_RULES + ANTI_HALLUCINATION_RULES + CONVERSATION_FLOW_RULES + LEARNED_RULES;
     }
 
     /**
@@ -628,6 +637,62 @@ CONVERSATION CONTINUITY:
         }
 
         return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
+    }
+    async verifyResponse(tenant, conversationHistory, aiResponse) {
+        if (!this.groqClient && !this.geminiAI) {
+            console.warn('⚠️ No fast provider (Groq/Gemini) available for Guardrail. Skipping verification.');
+            return { isSafe: true };
+        }
+
+        const systemPrompt = await this.buildSystemPrompt(tenant, null);
+        const guardrailPrompt = `You are a strict safety auditor (Guardrail) for a business AI. 
+The primary AI has generated a response based on the System Prompt and Conversation History.
+
+YOUR TASK:
+Read the System Prompt, the Conversation History, and the Proposed AI Response.
+Check if the Proposed AI Response violates ANY rules in the System Prompt (especially inventing information, confirming payments, promising dispatch, or ignoring the silence rule).
+
+FORMAT YOUR REPLY EXACTLY LIKE THIS:
+If the response follows all rules perfectly:
+SAFE
+
+If the response breaks a rule (hallucinates, invents, confirms things it shouldn't):
+UNSAFE: <Explain exactly what rule was broken, and write ONE new concise constraint starting with "NEVER" to prevent this in the future>
+
+Example UNSAFE reply:
+UNSAFE: AI falsely confirmed a payment and promised dispatch. NEVER confirm payments or promise dispatch times.
+
+Proposed AI Response to Audit:
+"""
+${aiResponse}
+"""`;
+
+        // We use the same history format, but append our guardrail prompt as a system message
+        const verificationHistory = [
+            ...conversationHistory,
+            { role: 'assistant', content: aiResponse }
+        ];
+
+        try {
+            const result = await this._generateWithProviders(guardrailPrompt, verificationHistory, false, null);
+            if (!result) return { isSafe: true };
+            
+            const cleanResult = result.trim();
+            if (cleanResult.startsWith('UNSAFE')) {
+                const parts = cleanResult.split('UNSAFE:');
+                const reasonAndRule = parts.length > 1 ? parts[1].trim() : 'Rule violation detected.';
+                
+                // Extract the "NEVER" rule if present
+                const neverMatch = reasonAndRule.match(/NEVER[^.]+/i);
+                const newRule = neverMatch ? neverMatch[0].trim() : null;
+                
+                return { isSafe: false, reason: reasonAndRule, newRule };
+            }
+            return { isSafe: true };
+        } catch (error) {
+            console.error('❌ Guardrail verification failed:', error.message);
+            return { isSafe: true }; // Fail open to avoid breaking the bot
+        }
     }
 }
 
