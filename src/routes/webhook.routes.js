@@ -783,8 +783,16 @@ router.post('/', async (req, res) => {
                         console.log(`🛡️ Guardrail is enabled for ${tenant.name}. Verifying response...`);
                         const guardrailCheck = await aiService.verifyResponse(tenant, history, aiResponse);
                         if (!guardrailCheck.isSafe) {
-                            console.warn(`🚨 Guardrail caught a hallucination! Reason: ${guardrailCheck.reason}`);
-                            aiResponse = "Main thoda samajh nahi paaya. Main owner ko aapka message forward kar raha hoon, wo jaldi hi reply karenge. [HANDOFF]";
+                            console.warn(`🚨 Guardrail caught a problem! Reason: ${guardrailCheck.reason}`);
+                            
+                            // Use the Guardrail's corrected response if available, otherwise fallback to HANDOFF
+                            if (guardrailCheck.correctedResponse) {
+                                console.log(`✏️ Guardrail rewrote the response: "${guardrailCheck.correctedResponse.slice(0, 80)}..."`);
+                                aiResponse = guardrailCheck.correctedResponse;
+                            } else {
+                                console.log(`🔄 No corrected response from Guardrail, using safe HANDOFF fallback.`);
+                                aiResponse = "Aapke sawaal ka jawab dene ke liye main owner ko notify kar raha hoon. Wo jaldi reply karenge. [HANDOFF]";
+                            }
                             
                             // Self-Healing: Learn the new rule
                             if (guardrailCheck.newRule) {

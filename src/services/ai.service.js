@@ -644,30 +644,49 @@ ${tenant.learned_rules}
             return { isSafe: true };
         }
 
-        const systemPrompt = await this.buildSystemPrompt(tenant, null);
-        const guardrailPrompt = `You are a strict safety auditor (Guardrail) for a business AI. 
-The primary AI has generated a response based on the System Prompt and Conversation History.
+        const guardrailPrompt = `You are a senior AI editor and safety auditor for a business WhatsApp AI receptionist.
+The primary AI has generated a response for a customer. Your job is to THINK DEEPLY about whether the response is appropriate.
 
-YOUR TASK:
-Read the System Prompt, the Conversation History, and the Proposed AI Response.
-Check if the Proposed AI Response violates ANY rules in the System Prompt (especially inventing information, confirming payments, promising dispatch, or ignoring the silence rule).
+BUSINESS: ${tenant.name}
+SYSTEM PROMPT RULES THE AI MUST FOLLOW:
+"""
+${tenant.systemPrompt}
+"""
 
-FORMAT YOUR REPLY EXACTLY LIKE THIS:
-If the response follows all rules perfectly:
-SAFE
-
-If the response breaks a rule (hallucinates, invents, confirms things it shouldn't):
-UNSAFE: <Explain exactly what rule was broken, and write ONE new concise constraint starting with "NEVER" to prevent this in the future>
-
-Example UNSAFE reply:
-UNSAFE: AI falsely confirmed a payment and promised dispatch. NEVER confirm payments or promise dispatch times.
-
-Proposed AI Response to Audit:
+PROPOSED AI RESPONSE TO AUDIT:
 """
 ${aiResponse}
-"""`;
+"""
 
-        // We use the same history format, but append our guardrail prompt as a system message
+YOUR TASK — Think step by step:
+
+1. ANALYZE: Read the customer's last message in the conversation history. What did they actually ask or say?
+
+2. CHECK FOR PROBLEMS — Look for ALL of these:
+   - Did the AI invent or fabricate information? (e.g., confirming payments, promising delivery, making up prices, inventing the owner's name)
+   - Did the AI claim to have capabilities it doesn't have? (e.g., "I'm forwarding your message", "I've checked your order")
+   - Did the AI violate the SILENCE rule? (replying to "ok", "thanks", "👍" when no new question was asked)
+   - Did the AI push a sales pitch when it shouldn't? (e.g., after a religious image or greeting)
+   - Did the AI ask unnecessary follow-up questions? (e.g., asking "kya chahiye?" after a simple greeting or image)
+   - Did the AI repeat itself or give a robotic canned response?
+   - Is the tone wrong for the situation? (e.g., too formal when customer is frustrated, or too casual for a complaint)
+
+3. VERDICT — Reply in ONE of these two formats:
+
+FORMAT A — If the response is fine:
+SAFE
+
+FORMAT B — If ANY problem is found:
+CORRECTED_RESPONSE: <Write the CORRECT response the AI should have sent instead. Keep it natural, short, in Hinglish, and following all the rules. Include [HANDOFF] or [SILENCE] tags if needed.>
+PROBLEM: <One-line explanation of what was wrong>
+RULE: <Write ONE new concise rule starting with "NEVER" to prevent this mistake in the future>
+
+IMPORTANT:
+- The corrected response must be a REAL, sendable WhatsApp message — not a description of what to do.
+- Keep corrected responses SHORT and natural (1-3 sentences max).
+- If the original response should have been [SILENCE], your corrected response should be exactly: [SILENCE]
+- If it needs a handoff, make sure [HANDOFF] tag is included.`;
+
         const verificationHistory = [
             ...conversationHistory,
             { role: 'assistant', content: aiResponse }
@@ -678,16 +697,39 @@ ${aiResponse}
             if (!result) return { isSafe: true };
             
             const cleanResult = result.trim();
-            if (cleanResult.startsWith('UNSAFE')) {
-                const parts = cleanResult.split('UNSAFE:');
-                const reasonAndRule = parts.length > 1 ? parts[1].trim() : 'Rule violation detected.';
-                
-                // Extract the "NEVER" rule if present
-                const neverMatch = reasonAndRule.match(/NEVER[^.]+/i);
-                const newRule = neverMatch ? neverMatch[0].trim() : null;
-                
-                return { isSafe: false, reason: reasonAndRule, newRule };
+            
+            if (cleanResult.startsWith('SAFE')) {
+                return { isSafe: true };
             }
+            
+            // Parse the structured correction
+            const correctedMatch = cleanResult.match(/CORRECTED_RESPONSE:\s*([\s\S]*?)(?=\nPROBLEM:|\nRULE:|$)/i);
+            const problemMatch = cleanResult.match(/PROBLEM:\s*(.*?)(?=\nRULE:|$)/i);
+            const ruleMatch = cleanResult.match(/RULE:\s*(.*?)$/im);
+            
+            const correctedResponse = correctedMatch ? correctedMatch[1].trim() : null;
+            const problem = problemMatch ? problemMatch[1].trim() : 'Rule violation detected.';
+            const newRule = ruleMatch ? ruleMatch[1].trim() : null;
+            
+            if (correctedResponse) {
+                return { 
+                    isSafe: false, 
+                    correctedResponse,
+                    reason: problem, 
+                    newRule 
+                };
+            }
+            
+            // Fallback: if we couldn't parse but it's clearly not SAFE
+            if (cleanResult.includes('UNSAFE') || cleanResult.includes('CORRECTED') || cleanResult.includes('PROBLEM')) {
+                return { 
+                    isSafe: false, 
+                    correctedResponse: null,
+                    reason: cleanResult.slice(0, 200), 
+                    newRule: null 
+                };
+            }
+            
             return { isSafe: true };
         } catch (error) {
             console.error('❌ Guardrail verification failed:', error.message);
