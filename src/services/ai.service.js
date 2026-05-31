@@ -689,15 +689,14 @@ FORMAT A — If the response ONLY contains information from the System Prompt an
 SAFE
 
 FORMAT B — If ANY problem is found (hallucination, tone, rule violation, or unauthorized information):
-CORRECTED_RESPONSE: <Write the CORRECT response the AI should have sent instead. Keep it natural, short, in Hinglish, and following all the rules. Include [HANDOFF] or [SILENCE] tags if needed.>
 PROBLEM: <One-line explanation of what was wrong>
 RULE: <Write ONE new concise rule starting with "NEVER" to prevent this mistake in the future>
+CORRECTED_RESPONSE: <Write the CORRECT response the AI should have sent instead. Keep it natural, short, in Hinglish, and following all the rules. Include [HANDOFF] or [SILENCE] tags if needed. THIS MUST BE THE LAST LINE.>
 
 IMPORTANT:
-- The corrected response must be a REAL, sendable WhatsApp message — not a description of what to do.
 - Keep corrected responses SHORT and natural (1-3 sentences max).
 - If the original response should have been [SILENCE], your corrected response should be exactly: [SILENCE]
-- If it needs a handoff, make sure [HANDOFF] tag is included.`;
+- DO NOT include chain-of-thought in the CORRECTED_RESPONSE.`;
 
         const verificationHistory = [
             ...conversationHistory,
@@ -714,14 +713,14 @@ IMPORTANT:
                 return { isSafe: true };
             }
             
-            // Parse the structured correction
-            const correctedMatch = cleanResult.match(/CORRECTED_RESPONSE:\s*([\s\S]*?)(?=\nPROBLEM:|\nRULE:|$)/i);
-            const problemMatch = cleanResult.match(/PROBLEM:\s*(.*?)(?=\nRULE:|$)/i);
-            const ruleMatch = cleanResult.match(/RULE:\s*(.*?)$/im);
+            // Parse the structured correction (with CORRECTED_RESPONSE at the end)
+            const problemMatch = cleanResult.match(/PROBLEM:\s*(.*?)(?=\nRULE:|\nCORRECTED_RESPONSE:|$)/i);
+            const ruleMatch = cleanResult.match(/RULE:\s*(.*?)(?=\nCORRECTED_RESPONSE:|$)/im);
+            const correctedMatch = cleanResult.match(/CORRECTED_RESPONSE:\s*([\s\S]*)$/i);
             
-            const correctedResponse = correctedMatch ? correctedMatch[1].trim() : null;
             const problem = problemMatch ? problemMatch[1].trim() : 'Rule violation detected.';
             const newRule = ruleMatch ? ruleMatch[1].trim() : null;
+            const correctedResponse = correctedMatch ? correctedMatch[1].trim() : null;
             
             if (correctedResponse) {
                 return { 
