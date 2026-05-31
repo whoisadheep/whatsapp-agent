@@ -811,9 +811,6 @@ router.post('/', async (req, res) => {
                         }
                     }
 
-                    // Add AI response to conversation history
-                    await conversationService.addMessage(tenant.id, senderNumber, 'assistant', aiResponse);
-
                     // ─── AI TRIGGERS ───
                     const qrTagRegex = /[\*\[]+SEND_UPI_QR[\*\]]+/i;
                     const leadTagRegex = /[\*\[]+SEND_LEAD_SUMMARY[\*\]]+/i;
@@ -853,6 +850,9 @@ router.post('/', async (req, res) => {
                         console.log(`🔇 AI triggered [SILENCE] or empty response for ${senderNumber}. Dropping message to avoid polite loops.`);
                         return; // Stop execution here, do not send anything.
                     }
+
+                    // Add AI response to conversation history ONLY IF it's not a silenced response
+                    await conversationService.addMessage(tenant.id, senderNumber, 'assistant', cleanedResponse || aiResponse);
 
                     // Send reply back through Evolution API
                     let voiceSent = false;
